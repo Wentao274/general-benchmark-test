@@ -7,6 +7,8 @@
   2. 模型服务启动命令（从 serve_command.txt 读取）
   3. Benchmark 测试命令（从 --bench-command 参数传入）
 
+使用前需复制 serve_command_template.txt 为 serve_command.txt 并填写真实部署命令。
+
 用法:
   python3 csv_to_md.py \
       --csv results.csv \
@@ -65,15 +67,16 @@ def read_serve_command(serve_cmd_path: str) -> str:
     """读取 serve_command.txt 文件内容。"""
     if not os.path.isfile(serve_cmd_path):
         print("[ERROR] 找不到模型服务启动命令文件: %s" % serve_cmd_path, file=sys.stderr)
-        print("        请在与测试脚本同级目录下创建 serve_command.txt，"
-              "文件内填写模型服务启动命令。", file=sys.stderr)
+        print("        请复制 serve_command_template.txt 为 serve_command.txt，"
+              "并填写真实的模型服务启动命令。", file=sys.stderr)
         sys.exit(1)
 
-    with open(serve_cmd_path, encoding="utf-8") as f:
+    with open(serve_cmd_path, encoding="utf-8-sig") as f:
         content = f.read().strip()
 
     if not content:
-        print("[ERROR] serve_command.txt 文件为空: %s" % serve_cmd_path, file=sys.stderr)
+        print("[ERROR] serve_command.txt 文件为空，请填写模型服务启动命令: %s"
+              % serve_cmd_path, file=sys.stderr)
         sys.exit(1)
 
     # 如果内容不以 ```bash 开头，则包裹为 bash 代码块

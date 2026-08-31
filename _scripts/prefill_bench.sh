@@ -101,6 +101,21 @@ case "$FRAMEWORK" in
     ;;
 esac
 
+# --- 前置校验：serve_command.txt ---
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+SERVE_CMD_FILE="${PROJECT_ROOT}/serve_command.txt"
+if [[ ! -f "$SERVE_CMD_FILE" ]]; then
+  echo "ERROR: 找不到 serve_command.txt，请先复制模板并填写模型服务启动命令：" >&2
+  echo "  cp serve_command_template.txt serve_command.txt" >&2
+  echo "  # 然后编辑 serve_command.txt 填写真实部署命令" >&2
+  exit 1
+fi
+if [[ ! -s "$SERVE_CMD_FILE" ]]; then
+  echo "ERROR: serve_command.txt 文件为空，请填写真实的模型服务启动命令。" >&2
+  exit 1
+fi
+
 # --- 后台执行（默认） ---
 if [[ "$BACKGROUND" == "true" ]]; then
   mkdir -p "$REPORT_DIR"

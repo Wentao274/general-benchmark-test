@@ -8,7 +8,7 @@
 general-benchmark-test/
 ├── Model_Inference_Benchmark_TestStrategy.md   完整测试方案文档
 ├── benchmark_analysis_template.md              Markdown 报告模板
-├── serve_command.txt                           模型服务启动命令（报告第二部分数据源）
+├── serve_command_template.txt                   模型服务启动命令模板（需复制为 serve_command.txt）
 └── _scripts/
     ├── bench.sh                                基础 Benchmark 脚本
     ├── prefill_bench.sh                        纯 Prefill 测试脚本
@@ -21,7 +21,11 @@ general-benchmark-test/
 ## 前置条件
 
 1. 推理服务已启动并可访问
-2. 在项目根目录创建 `serve_command.txt`，填写模型服务启动命令（供报告生成使用）
+2. 复制 `serve_command_template.txt` 为 `serve_command.txt`，填写真实的模型服务启动命令
+   ```bash
+   cp serve_command_template.txt serve_command.txt
+   ```
+   > 每个测试脚本在执行前会校验 `serve_command.txt`：文件不存在或内容为空都会报错中止
 3. 所有脚本默认后台执行，加 `-f` 切前台
 
 ---
@@ -256,7 +260,7 @@ Markdown 报告分三部分：
 | 部分 | 内容来源 |
 |---|---|
 | 一、测试结果 | CSV 自动转换（前 4 列相同值留空合并） |
-| 二、模型服务启动命令 | 项目根目录 `serve_command.txt` |
+| 二、模型服务启动命令 | 项目根目录 `serve_command.txt`（从模板复制） |
 | 三、Benchmark 测试命令 | 脚本自动记录实际执行的 bench 工具命令 |
 
 ### 手动生成报告

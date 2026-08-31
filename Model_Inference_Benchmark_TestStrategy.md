@@ -472,10 +472,10 @@ CSV 生成后，脚本会**自动调用** `csv_to_md.py` 将 CSV 转换为 Markd
 | 部分 | 内容来源 | 说明 |
 |---|---|---|
 | **一、测试结果** | CSV 文件自动转换 | 将 CSV 数据转为 Markdown 表格 |
-| **二、模型服务启动命令** | `serve_command.txt` 文件 | 固定文件名，需放在项目根目录；找不到则报错 |
+| **二、模型服务启动命令** | `serve_command.txt` 文件 | 需从 `serve_command_template.txt` 复制并填写真实命令；找不到则报错 |
 | **三、Benchmark 测试命令** | 脚本自动记录 | 捕获实际执行的 bench 工具命令（`python -m sglang.bench_serving ...` / `vllm bench serve ...`），按参数组合依次列出 |
 
-> **`serve_command.txt`**：项目根目录下的固定文件，内填写模型服务启动命令（如 `python -m sglang.launch_server ...`）。
+> **`serve_command.txt`**：需从 `serve_command_template.txt` 复制并填写真实模型服务启动命令（如 `python -m sglang.launch_server ...`）。
 > `csv_to_md.py` 会自动读取其内容填入报告第二部分。模板见 `benchmark_analysis_template.md`。
 
 也可以**手动执行**生成报告：
@@ -1144,7 +1144,7 @@ HBM 带宽 / NCCL 通信），构建 roofline 上界，计算 MFU 达成率。
 general-benchmark-test/
 ├── Model_Inference_Benchmark_TestStrategy.md   本文档
 ├── benchmark_analysis_template.md              Markdown 报告模板
-├── serve_command.txt                           模型服务启动命令（csv_to_md.py 读取）
+├── serve_command_template.txt                  模型服务启动命令模板（需复制为 serve_command.txt 填写真实命令）
 └── _scripts/
     ├── bench.sh                                第1章 benchmark 脚本（统一，-F 指定 sglang/vllm）
     ├── prefill_bench.sh                        第2章 纯 Prefill 脚本（统一，-F 指定 sglang/vllm）
@@ -1163,8 +1163,8 @@ general-benchmark-test/
 | `decode_bench.sh` | `sglang` / `vllm` | SGLang 用 GSP / vLLM 用 prefix-repetition，`num_prompts = 2×并发` 稀释首请求 prefill |
 | `decode_http_sweep.py` | **仅 Python 标准库** | 零第三方依赖，跨框架/跨厂商可用 |
 | `collect_results.py` | **仅 Python 标准库** | 扫描日志提取指标生成 CSV，所有脚本结束后自动调用 |
-| `csv_to_md.py` | **仅 Python 标准库** | 将 CSV 转换为 Markdown 测试报告（三部分：结果表格 + 服务启动命令 + 测试命令），自动读取 `serve_command.txt` |
-| `serve_command.txt` | — | 固定文件名，填写模型服务启动命令示例，`csv_to_md.py` 自动读取填入报告第二部分 |
+| `csv_to_md.py` | **仅 Python 标准库** | 将 CSV 转换为 Markdown 测试报告（三部分：结果表格 + 服务启动命令 + 测试命令），自动读取 `serve_command.txt`，找不到或为空则报错 |
+| `serve_command_template.txt` | — | 模板文件，执行者复制为 `serve_command.txt` 并填写真实模型服务启动命令 |
 | `benchmark_analysis_template.md` | — | Markdown 报告模板，包含三部分示例（结果表格 / 服务启动命令 / 测试命令） |
 
 ### 快速参考：服务端配置对照

@@ -220,3 +220,6 @@ __marimo__/
 # Benchmark test reports & logs
 *_reports/
 results/
+
+# User-local serve command (copy from serve_command_template.txt)
+serve_command.txt
