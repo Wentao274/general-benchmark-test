@@ -40,7 +40,7 @@
 | **输入输出长度组合** | `2048 512` `8192 1024` `32768 1024` `65536 1024` | 格式为 `输入长度 输出长度`，覆盖 2K~64K 输入 |
 | **并发数序列** | `1, 4, 8, 16, 32, 64, 128` | 并发数 = num_prompts（请求数与并发数相同） |
 | **数据集** | `random-ids`(SGLang) / `random`(vLLM) | 随机 token，避免前缀缓存干扰 |
-| **random-range-ratio** | `1.0`(SGLang) / `0.0`(vLLM) | SGLang 允许长度随机波动；vLLM 固定长度 |
+| **random-range-ratio** | `1.0`(SGLang) / `0.0`(vLLM) | 固定长度（SGLang 1.0 表示完全使用 random-input-len，vLLM 0.0 表示固定长度，两者均为固定长度） |
 | **Seed** | `123` | 固定随机种子，保证可复现 |
 | **测试间隔** | `60s` | 每组测试后等待服务恢复稳态 |
 
@@ -843,7 +843,7 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 | **输入长度** | `65536` | 固定 64K，测量最大 prefill 算力 |
 | **输出长度** | `1` | 固定 1，确保 0 次 decode |
 | **并发数 / num-prompts** | `1, 4, 8, 16, 32, 64, 128` | 并发数 = 请求数 |
-| **random-range-ratio** | `1.0`(SGLang) / `0.0`(vLLM) | SGLang 允许随机波动；vLLM 固定长度 |
+| **random-range-ratio** | `1.0`(SGLang) / `0.0`(vLLM) | 固定长度（SGLang 1.0 表示完全使用 random-input-len，vLLM 0.0 表示固定长度，两者均为固定长度） |
 | **random-prefix-len** | `0` | 无共享前缀 |
 | **Seed** | `123` | 可复现 |
 
@@ -1004,7 +1004,7 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 | **新增 token 数** | `1` | 每请求在共享前缀后新增 1 个 token（确保 prefill≈0） |
 | **并发数** | `1, 4, 8, 16, 32, 64, 128` | max-concurrency |
 | **num-prompts** | `2 × 并发数` | 稀释首个请求 prefill 开销（bench 工具无预热机制） |
-| **random-range-ratio** | `1.0`(SGLang) / `0.0`(vLLM) | SGLang 允许随机波动；vLLM 固定长度 |
+| **random-range-ratio** | `1.0`(SGLang) / `0.0`(vLLM) | 固定长度（SGLang 1.0 表示完全使用 random-input-len，vLLM 0.0 表示固定长度，两者均为固定长度） |
 | **Seed** | `123` | 可复现 |
 
 **方法 A（最小输入，无需前缀缓存）的替代参数**：
