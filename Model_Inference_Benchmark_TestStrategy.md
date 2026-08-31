@@ -82,6 +82,7 @@
 > 4. 默认后台执行（自动 nohup + 日志重定向），`-f/--foreground` 切前台
 > 5. 并发数和 IO 组合可通过 `-c` / `-i` 参数覆盖
 > 6. 测试结束后自动调用 `collect_results.py` 生成汇总 CSV，再自动调用 `csv_to_md.py` 生成 Markdown 测试报告
+> 7. 通过 `-T/--tester` 指定测试人员，报告目录增加 tester 层级（`{report-dir}/{tester}/{model_name}/{TS}/`），Markdown 报告命名为 `{tester}_{model_name}_results_report_{TS}.md`
 
 ```bash
 #!/bin/bash
@@ -96,6 +97,7 @@ SEED=123
 SLEEP_TIME=60
 REPORT_DIR=""
 CHIP_TYPE=""
+TESTER=""
 BACKGROUND=true
 
 # 并发数列表（同时也是 num-prompts 的值）
@@ -122,12 +124,13 @@ Usage: $0 -F <sglang|vllm> [OPTIONS]
   -s, --sleep SECONDS           每次测试间隔秒数    (default: $SLEEP_TIME)
   -f, --foreground             前台执行(默认后台)
   -t, --chip-type TYPE          芯片类型(用于CSV列名后缀,如H100/B200)
+  -T, --tester NAME            测试人员(必选,用于报告目录层级和报告命名)
   -h, --help                    显示帮助
 
 示例（默认后台执行）:
-  $0 -F sglang -u http://127.0.0.1:8080 -m /data/model -n model-name -t H100
-  $0 -F vllm   -u http://127.0.0.1:8000 -m /data/model -n model-name -t H100
-  $0 -F sglang -f -u http://... -m /path -n name              # 前台执行
+  $0 -F sglang -u http://127.0.0.1:8080 -m /data/model -n model-name -t H100 -T zhangsan
+  $0 -F vllm   -u http://127.0.0.1:8000 -m /data/model -n model-name -t H100 -T zhangsan
+  $0 -F sglang -f -u http://... -m /path -n name -T zhangsan              # 前台执行
 EOF
 }
 
@@ -143,6 +146,7 @@ while [[ $# -gt 0 ]]; do
     -s|--sleep)               SLEEP_TIME="$2";           shift 2 ;;
     -f|--foreground)          BACKGROUND=false;          shift   ;;
     -t|--chip-type)           CHIP_TYPE="$2";            shift 2 ;;
+    -T|--tester)              TESTER="$2";               shift 2 ;;
     -h|--help)                usage; exit 0             ;;
     *) echo "Unknown option: $1" >&2; usage; exit 1    ;;
   esac
@@ -177,6 +181,14 @@ case "$FRAMEWORK" in
     ;;
 esac
 
+# --- 校验测试人员参数 ---
+if [[ -z "$TESTER" ]]; then
+  echo "ERROR: 必须指定测试人员，使用 -T/--tester 参数" >&2
+  echo ""
+  usage
+  exit 1
+fi
+
 # --- 前置校验：serve_command.txt ---
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
@@ -194,8 +206,8 @@ fi
 
 # --- 后台执行（默认）：带 --foreground 重新 nohup 自身 ---
 if [[ "$BACKGROUND" == "true" ]]; then
-  mkdir -p "$REPORT_DIR"
-  LOG_FILE="${REPORT_DIR}/${LOG_PREFIX}_$(date +%Y%m%d_%H%M%S).log"
+  mkdir -p "$REPORT_DIR/${TESTER}"
+  LOG_FILE="${REPORT_DIR}/${TESTER}/${LOG_PREFIX}_$(date +%Y%m%d_%H%M%S).log"
   # 重新启动自身（带 --foreground 强制前台），输出重定向到日志文件
   nohup "$0" \
     --framework "$FRAMEWORK" \
@@ -207,6 +219,7 @@ if [[ "$BACKGROUND" == "true" ]]; then
     --io-combinations "${IO_ARG:-$DEFAULT_IO}" \
     --sleep "$SLEEP_TIME" \
     --chip-type "$CHIP_TYPE" \
+    --tester "$TESTER" \
     --foreground \
     > "$LOG_FILE" 2>&1 &
   PID=$!
@@ -229,7 +242,8 @@ IFS=',' read -ra io_combinations <<< "$IO_STR"
 safe_model_name=$(echo "$SERVED_MODEL_NAME" | sed 's/.*[\/\\]//; s/[:\\]//g')
 
 # --- 创建报告目录 ---
-mkdir -p "$REPORT_DIR/${safe_model_name}"
+RUN_DIR="$REPORT_DIR/${TESTER}/${safe_model_name}/${RUN_TS}"
+mkdir -p "$RUN_DIR"
 
 echo "=========================================="
 echo "=== Starting ${BENCH_LABEL} Benchmark Suite ==="
@@ -237,10 +251,11 @@ echo "=== Framework:    $FRAMEWORK"
 echo "=== Base URL:     $BASE_URL"
 echo "=== Model Path:   $MODEL_PATH"
 echo "=== Served Name:  $SERVED_MODEL_NAME"
-echo "=== Report Dir:   $REPORT_DIR/${safe_model_name}"
+echo "=== Report Dir:   $RUN_DIR"
 echo "=== Concurrency:  ${concurrency_list[*]}"
 echo "=== IO Combos:     ${io_combinations[*]}"
 echo "=== Chip Type:    ${CHIP_TYPE:-(未指定)}"
+echo "=== Tester:       $TESTER"
 echo "=========================================="
 
 # --- 运行时间戳（用于输出文件名，避免覆盖） ---
@@ -260,7 +275,7 @@ for concurrency in "${concurrency_list[@]}"; do
     output_len=$(echo "$combo" | awk '{print $2}')
 
     # 构建日志文件路径
-    log_file="${REPORT_DIR}/${safe_model_name}/input_len-${input_len}-output_len-${output_len}-bs-${num_prompts}_${RUN_TS}.log"
+    log_file="${RUN_DIR}/input_len-${input_len}-output_len-${output_len}-bs-${num_prompts}.log"
 
     echo ""
     echo ">>> Running test: Input=$input_len, Output=$output_len, Concurrency=$concurrency"
@@ -320,7 +335,7 @@ done
 
 echo ""
 echo "=== All benchmark runs finished ==="
-echo "=== Check results in: $REPORT_DIR/${safe_model_name} ==="
+echo "=== Check results in: $RUN_DIR ==="
 
 # --- 构建 BENCH_COMMANDS（循环模板，变量占位，用于报告第三部分） ---
 CONC_LIST="${concurrency_list[*]}"
@@ -384,16 +399,16 @@ fi
 
 # --- 自动收集结果生成 CSV ---
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CSV_FILE="${REPORT_DIR}/${safe_model_name}/results_${RUN_TS}.csv"
+CSV_FILE="${RUN_DIR}/results.csv"
 python3 "${SCRIPT_DIR}/collect_results.py" \
-  --report-dir "$REPORT_DIR/${safe_model_name}" \
+  --report-dir "$RUN_DIR" \
   --model-name "$SERVED_MODEL_NAME" \
   --framework "$FRAMEWORK" \
   --chip-type "$CHIP_TYPE" \
   --out "$CSV_FILE"
 
 # --- 自动生成 Markdown 测试报告 ---
-MD_FILE="${CSV_FILE%.csv}_report.md"
+MD_FILE="${RUN_DIR}/${TESTER}_${safe_model_name}_results_report_${RUN_TS}.md"
 python3 "${SCRIPT_DIR}/csv_to_md.py" \
   --csv "$CSV_FILE" \
   --output "$MD_FILE" \
@@ -410,14 +425,14 @@ python3 "${SCRIPT_DIR}/csv_to_md.py" \
   -u http://127.0.0.1:8080 \
   -m /data1/GLM-5.2-Channel-FP8-w8a8 \
   -n glm-5.2-fp8 \
-  -t H100
+  -t H100 -T zhangsan
 
 # vLLM
 ./bench.sh -F vllm \
   -u http://127.0.0.1:8000 \
   -m /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
   -n glm-5.2-fp8 \
-  -t H100
+  -t H100 -T zhangsan
 ```
 
 #### 前台执行
@@ -425,15 +440,15 @@ python3 "${SCRIPT_DIR}/csv_to_md.py" \
 ```bash
 # 默认即后台执行（自动 nohup + 日志重定向）。
 # 如需前台执行（输出直接到终端），加 -f / --foreground：
-./bench.sh -F sglang -f -u http://127.0.0.1:8080 -m /data/model -n model-name
-./bench.sh -F vllm   -f -u http://127.0.0.1:8000 -m /path -n name
+./bench.sh -F sglang -f -u http://127.0.0.1:8080 -m /data/model -n model-name -T zhangsan
+./bench.sh -F vllm   -f -u http://127.0.0.1:8000 -m /path -n name -T zhangsan
 
 # 后台执行（默认）
-./bench.sh -F sglang -u http://127.0.0.1:8080 -m /data/model -n model-name
+./bench.sh -F sglang -u http://127.0.0.1:8080 -m /data/model -n model-name -T zhangsan
 # 输出示例：
 #   SGLang benchmark 已在后台启动 (PID: 12345)
-#   日志文件: ./sglang_reports/sglang_bench_20260827_143022.log
-#   监控进度: tail -f "./sglang_reports/sglang_bench_20260827_143022.log"
+#   日志文件: ./sglang_reports/zhangsan/sglang_bench_20260827_143022.log
+#   监控进度: tail -f "./sglang_reports/zhangsan/sglang_bench_20260827_143022.log"
 ```
 
 #### 自定义参数
@@ -443,13 +458,14 @@ python3 "${SCRIPT_DIR}/csv_to_md.py" \
 ./bench.sh -F sglang \
   -u http://127.0.0.1:8080 -m /data/model -n model-name \
   -c 1,8,32,128 \
-  -i "2048 512,8192 1024"
+  -i "2048 512,8192 1024" \
+  -T zhangsan
 
 # 指定报告目录和间隔时间
 ./bench.sh -F vllm \
   -u http://127.0.0.1:8000 -m /data/model -n model-name \
   -r /mnt/results/vllm_bench \
-  -s 30
+  -s 30 -T zhangsan
 ```
 
 #### 参数说明
@@ -466,6 +482,7 @@ python3 "${SCRIPT_DIR}/csv_to_md.py" \
 | `--sleep` | `-s` | 每次测试间隔秒数 | `60` |
 | `--foreground` | `-f` | 前台执行（脚本默认后台执行） | — |
 | `--chip-type` | `-t` | 芯片类型（用于结果 CSV 列名后缀，如 `H100`/`B200`） | 空 |
+| `--tester` | `-T` | **必选** 测试人员（用于报告目录层级和报告命名） | — |
 
 ### 1.6 结果解析与汇总
 
@@ -518,9 +535,9 @@ Mean TPOT (ms):  9.25                         ← Mean TPOT
 所有 bench 脚本在测试结束后会**自动调用** `collect_results.py` 扫描日志目录，生成汇总 CSV，随后**自动调用** `csv_to_md.py` 将 CSV 转换为 Markdown 测试报告，无需手动操作。
 
 生成的文件位置（`{TS}` 为运行时间戳 `YYYYMMDD_HHMMSS`，避免重复执行时覆盖）：
-- **Benchmark**：`{report-dir}/{model_name}/input_len-{IL}-output_len-{OL}-bs-{N}_{TS}.log` → `results_{TS}.csv` → `results_{TS}_report.md`
-- **纯 Prefill**：`{report-dir}/{model_name}/prefill_input-{IL}-bs-{N}_{TS}.log` → `prefill_results_{TS}.csv` → `prefill_results_{TS}_report.md`
-- **纯 Decode**：`{report-dir}/{model_name}/decode_prefix-{PL}-output-{OL}-bs-{N}_{TS}.log` → `decode_results_{TS}.csv` → `decode_results_{TS}_report.md`
+- **Benchmark**：`{report-dir}/{tester}/{model_name}/{TS}/input_len-{IL}-output_len-{OL}-bs-{N}.log` → `results.csv` → `{tester}_{model_name}_results_report_{TS}.md`
+- **纯 Prefill**：`{report-dir}/{tester}/{model_name}/{TS}/prefill_input-{IL}-bs-{N}.log` → `prefill_results.csv` → `{tester}_{model_name}_prefill_results_report_{TS}.md`
+- **纯 Decode**：`{report-dir}/{tester}/{model_name}/{TS}/decode_prefix-{PL}-output-{OL}-bs-{N}.log` → `decode_results.csv` → `{tester}_{model_name}_decode_results_report_{TS}.md`
 
 CSV 表头（`-t` 指定芯片类型后，列名带后缀）：
 
@@ -540,11 +557,11 @@ glm-5.2-fp8,sglang,8192,1024,128,152.64,152.64,305.28,321.42,1181.54,9.25
 
 ```bash
 python3 _scripts/collect_results.py \
-  --report-dir ./sglang_reports/glm-5.2-fp8 \
+  --report-dir ./sglang_reports/zhangsan/glm-5.2-fp8/20260831_143022 \
   --model-name glm-5.2-fp8 \
   --framework sglang \
   --chip-type H100 \
-  --out ./sglang_reports/glm-5.2-fp8/results.csv
+  --out ./sglang_reports/zhangsan/glm-5.2-fp8/20260831_143022/results.csv
 ```
 
 > **注意**：vLLM 的 `bench serve` 不直接输出"输入 token 吞吐量"，
@@ -567,8 +584,8 @@ CSV 生成后，脚本会**自动调用** `csv_to_md.py` 将 CSV 转换为 Markd
 
 ```bash
 python3 _scripts/csv_to_md.py \
-  --csv ./sglang_reports/glm-5.2-fp8/results.csv \
-  --output ./sglang_reports/glm-5.2-fp8/results_report.md \
+  --csv ./sglang_reports/zhangsan/glm-5.2-fp8/20260831_143022/results.csv \
+  --output ./sglang_reports/zhangsan/glm-5.2-fp8/20260831_143022/zhangsan_glm-5.2-fp8_results_report_20260831_143022.md \
   --bench-command "python -m sglang.bench_serving --backend sglang-oai-chat --base-url http://127.0.0.1:8080 ..."
 ```
 
@@ -839,19 +856,19 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 ./prefill_bench.sh -F sglang \
   -u http://127.0.0.1:8080 \
   -m /data1/GLM-5.2-Channel-FP8-w8a8 \
-  -n glm-5.2-fp8 -t H100
+  -n glm-5.2-fp8 -t H100 -T zhangsan
 
 # vLLM 纯 Prefill
 ./prefill_bench.sh -F vllm \
   -u http://127.0.0.1:8000 \
   -m /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
-  -n glm-5.2-fp8 -t H100
+  -n glm-5.2-fp8 -t H100 -T zhangsan
 
 # 默认后台执行，加 -f 前台
-./prefill_bench.sh -F sglang -f -u http://... -m /path -n name
+./prefill_bench.sh -F sglang -f -u http://... -m /path -n name -T zhangsan
 
 # 自定义输入长度和并发
-./prefill_bench.sh -F sglang -c 1,8,64 -i "32768 1,65536 1"
+./prefill_bench.sh -F sglang -c 1,8,64 -i "32768 1,65536 1" -T zhangsan
 ```
 
 **参数说明**：
@@ -865,6 +882,7 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 | `--io-combinations` | `-i` | | `65536 1` | IO 组合（逗号分隔，每组 `"输入 输出"`） |
 | `--concurrency` | `-c` | | `1,4,8,16,32,64,128` | 并发数列表 |
 | `--chip-type` | `-t` | | — | 芯片类型（CSV 列名后缀） |
+| `--tester` | `-T` | ✅ | — | 测试人员（用于报告目录层级和报告命名） |
 | `--sleep` | `-s` | | `60` | 每组测试间隔（秒） |
 | `--foreground` | `-f` | | 后台 | 前台执行 |
 | `--report-dir` | `-r` | | `./{framework}_prefill_reports` | 报告输出目录 |
@@ -1015,7 +1033,8 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
   -n glm-5.2-fp8 -t H100 \
   -p 4096,32768,65536 \
   -o 1024 \
-  -c 1,4,8,16,32,64,128
+  -c 1,4,8,16,32,64,128 \
+  -T zhangsan
 
 # vLLM 纯 Decode（使用 prefix-repetition 数据集，保证共享前缀）
 ./decode_bench.sh -F vllm \
@@ -1024,13 +1043,14 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
   -n glm-5.2-fp8 -t H100 \
   -p 4096,32768,65536 \
   -o 1024 \
-  -c 1,4,8,16,32,64,128
+  -c 1,4,8,16,32,64,128 \
+  -T zhangsan
 
 # 默认后台执行，加 -f 前台
-./decode_bench.sh -F sglang -f -u http://... -m /path -n name
+./decode_bench.sh -F sglang -f -u http://... -m /path -n name -T zhangsan
 
 # 自定义前缀、输出和并发
-./decode_bench.sh -F sglang -p 8192,65536 -o 512 -c 1,16,128
+./decode_bench.sh -F sglang -p 8192,65536 -o 512 -c 1,16,128 -T zhangsan
 ```
 
 **参数说明**：
@@ -1045,6 +1065,7 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 | `--output-lens` | `-o` | | `1024` | 输出长度列表 |
 | `--concurrency` | `-c` | | `1,4,8,16,32,64,128` | 并发数列表（num_prompts = 2×并发） |
 | `--chip-type` | `-t` | | — | 芯片类型（CSV 列名后缀） |
+| `--tester` | `-T` | ✅ | — | 测试人员（用于报告目录层级和报告命名） |
 | `--sleep` | `-s` | | `60` | 每组测试间隔（秒） |
 | `--foreground` | `-f` | | 后台 | 前台执行 |
 | `--report-dir` | `-r` | | `./{framework}_decode_reports` | 报告输出目录 |

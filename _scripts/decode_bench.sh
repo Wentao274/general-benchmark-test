@@ -33,6 +33,7 @@ SEED=123
 SLEEP_TIME=60
 REPORT_DIR=""
 CHIP_TYPE=""
+TESTER=""
 BACKGROUND=true
 
 # 前缀长度列表（模拟 KV cache 已就位的上下文长度）
@@ -66,12 +67,13 @@ Usage: $0 -F <sglang|vllm> [OPTIONS]
   -s, --sleep SECONDS           每次测试间隔秒数    (default: $SLEEP_TIME)
   -f, --foreground              前台执行(默认后台)
   -t, --chip-type TYPE          芯片类型(用于CSV列名后缀,如H100/B200)
+  -T, --tester NAME            测试人员(必选,用于报告目录层级和报告命名)
   -h, --help                    显示帮助
 
 示例（默认后台执行）:
-  $0 -F sglang -u http://127.0.0.1:8080 -m /data/model -n model-name -t H100
-  $0 -F vllm   -u http://127.0.0.1:8000 -m /data/model -n model-name -t H100
-  $0 -F sglang -f -u http://... -p 4096,16384 -o 1024 -c 1,8,64   # 前台执行
+  $0 -F sglang -u http://127.0.0.1:8080 -m /data/model -n model-name -t H100 -T zhangsan
+  $0 -F vllm   -u http://127.0.0.1:8000 -m /data/model -n model-name -t H100 -T zhangsan
+  $0 -F sglang -f -u http://... -p 4096,16384 -o 1024 -c 1,8,64 -T zhangsan   # 前台执行
 EOF
 }
 
@@ -88,6 +90,7 @@ while [[ $# -gt 0 ]]; do
     -s|--sleep)               SLEEP_TIME="$2";           shift 2 ;;
     -f|--foreground)          BACKGROUND=false;          shift   ;;
     -t|--chip-type)           CHIP_TYPE="$2";            shift 2 ;;
+    -T|--tester)              TESTER="$2";               shift 2 ;;
     -h|--help)                usage; exit 0             ;;
     *) echo "Unknown option: $1" >&2; usage; exit 1    ;;
   esac
@@ -120,6 +123,14 @@ case "$FRAMEWORK" in
     ;;
 esac
 
+# --- 校验测试人员参数 ---
+if [[ -z "$TESTER" ]]; then
+  echo "ERROR: 必须指定测试人员，使用 -T/--tester 参数" >&2
+  echo ""
+  usage
+  exit 1
+fi
+
 # --- 前置校验：serve_command.txt ---
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
@@ -137,8 +148,8 @@ fi
 
 # --- 后台执行（默认） ---
 if [[ "$BACKGROUND" == "true" ]]; then
-  mkdir -p "$REPORT_DIR"
-  LOG_FILE="${REPORT_DIR}/${LOG_PREFIX}_$(date +%Y%m%d_%H%M%S).log"
+  mkdir -p "$REPORT_DIR/${TESTER}"
+  LOG_FILE="${REPORT_DIR}/${TESTER}/${LOG_PREFIX}_$(date +%Y%m%d_%H%M%S).log"
   # 重新启动自身（带 --foreground 强制前台），输出重定向到日志文件
   nohup "$0" \
     --framework "$FRAMEWORK" \
@@ -151,6 +162,7 @@ if [[ "$BACKGROUND" == "true" ]]; then
     --concurrency "${CONCURRENCY_ARG:-$DEFAULT_CONCURRENCY}" \
     --sleep "$SLEEP_TIME" \
     --chip-type "$CHIP_TYPE" \
+    --tester "$TESTER" \
     --foreground \
     > "$LOG_FILE" 2>&1 &
   PID=$!
@@ -175,7 +187,7 @@ safe_model_name=$(echo "$SERVED_MODEL_NAME" | sed 's/.*[\/\\]//; s/[:\\]//g')
 RUN_TS=$(date +%Y%m%d_%H%M%S)
 
 # --- 创建报告目录 ---
-RUN_DIR="$REPORT_DIR/${safe_model_name}/${RUN_TS}"
+RUN_DIR="$REPORT_DIR/${TESTER}/${safe_model_name}/${RUN_TS}"
 mkdir -p "$RUN_DIR"
 
 echo "=========================================="
@@ -194,6 +206,7 @@ else
   echo "=== Dataset:      prefix-repetition"
 fi
 echo "=== 前缀缓存:      ON (必须开启) ==="
+echo "=== Tester:       $TESTER"
 echo "=========================================="
 
 for prefix_len in "${prefix_lens[@]}"; do
@@ -335,7 +348,7 @@ python3 "${SCRIPT_DIR}/collect_results.py" \
   --out "$CSV_FILE"
 
 # --- 自动生成 Markdown 测试报告 ---
-MD_FILE="${CSV_FILE%.csv}_report.md"
+MD_FILE="${RUN_DIR}/${TESTER}_${safe_model_name}_decode_results_report_${RUN_TS}.md"
 python3 "${SCRIPT_DIR}/csv_to_md.py" \
   --csv "$CSV_FILE" \
   --output "$MD_FILE" \
