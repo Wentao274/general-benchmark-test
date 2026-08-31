@@ -81,7 +81,7 @@
 > 3. `BASE_URL` / `MODEL_PATH` / `SERVED_MODEL_NAME` 支持命令行参数传递
 > 4. 默认后台执行（自动 nohup + 日志重定向），`-f/--foreground` 切前台
 > 5. 并发数和 IO 组合可通过 `-c` / `-i` 参数覆盖
-> 6. 测试结束后自动调用 `collect_results.py` 生成汇总 CSV
+> 6. 测试结束后自动调用 `collect_results.py` 生成汇总 CSV，再自动调用 `csv_to_md.py` 生成 Markdown 测试报告
 
 ```bash
 #!/bin/bash
@@ -90,8 +90,8 @@ set -euo pipefail
 # --- 默认配置 ---
 FRAMEWORK=""
 BASE_URL="${BASE_URL:-http://127.0.0.1:8080}"
-MODEL_PATH="${MODEL_PATH:-/data1/DeepSeek-V4-Flash-INT8-Channel}"
-SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-dsv4-flash}"
+MODEL_PATH="${MODEL_PATH:-/data1/GLM-5.2-Channel-FP8-w8a8}"
+SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-glm-5.2-fp8}"
 SEED=123
 SLEEP_TIME=60
 REPORT_DIR=""
@@ -177,6 +177,21 @@ case "$FRAMEWORK" in
     ;;
 esac
 
+# --- 前置校验：serve_command.txt ---
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+SERVE_CMD_FILE="${PROJECT_ROOT}/serve_command.txt"
+if [[ ! -f "$SERVE_CMD_FILE" ]]; then
+  echo "ERROR: 找不到 serve_command.txt，请先复制模板并填写模型服务启动命令：" >&2
+  echo "  cp serve_command_template.txt serve_command.txt" >&2
+  echo "  # 然后编辑 serve_command.txt 填写真实部署命令" >&2
+  exit 1
+fi
+if [[ ! -s "$SERVE_CMD_FILE" ]]; then
+  echo "ERROR: serve_command.txt 文件为空，请填写真实的模型服务启动命令。" >&2
+  exit 1
+fi
+
 # --- 后台执行（默认）：带 --foreground 重新 nohup 自身 ---
 if [[ "$BACKGROUND" == "true" ]]; then
   mkdir -p "$REPORT_DIR"
@@ -228,6 +243,9 @@ echo "=== IO Combos:     ${io_combinations[*]}"
 echo "=== Chip Type:    ${CHIP_TYPE:-(未指定)}"
 echo "=========================================="
 
+# --- 运行时间戳（用于输出文件名，避免覆盖） ---
+RUN_TS=$(date +%Y%m%d_%H%M%S)
+
 # 外层循环：遍历不同的并发值
 for concurrency in "${concurrency_list[@]}"; do
   num_prompts=$concurrency
@@ -242,7 +260,7 @@ for concurrency in "${concurrency_list[@]}"; do
     output_len=$(echo "$combo" | awk '{print $2}')
 
     # 构建日志文件路径
-    log_file="${REPORT_DIR}/${safe_model_name}/input_len-${input_len}-output_len-${output_len}-bs-${num_prompts}.log"
+    log_file="${REPORT_DIR}/${safe_model_name}/input_len-${input_len}-output_len-${output_len}-bs-${num_prompts}_${RUN_TS}.log"
 
     echo ""
     echo ">>> Running test: Input=$input_len, Output=$output_len, Concurrency=$concurrency"
@@ -304,15 +322,82 @@ echo ""
 echo "=== All benchmark runs finished ==="
 echo "=== Check results in: $REPORT_DIR/${safe_model_name} ==="
 
+# --- 构建 BENCH_COMMANDS（循环模板，变量占位，用于报告第三部分） ---
+CONC_LIST="${concurrency_list[*]}"
+IO_QUOTED=""
+for io in "${io_combinations[@]}"; do
+  IO_QUOTED="${IO_QUOTED}\"$io\" "
+done
+IO_QUOTED="${IO_QUOTED% }"
+
+if [[ "$FRAMEWORK" == "sglang" ]]; then
+  BENCH_COMMANDS="# 并发数列表: ${CONCURRENCY_STR}
+# IO 组合: ${IO_STR}
+for CONCURRENCY in ${CONC_LIST}; do
+  NUM_PROMPTS=\$CONCURRENCY
+  for IO in ${IO_QUOTED}; do
+    INPUT_LEN=\$(echo \"\$IO\" | awk '{print \$1}')
+    OUTPUT_LEN=\$(echo \"\$IO\" | awk '{print \$2}')
+    python -m sglang.bench_serving \\
+      --backend sglang-oai-chat \\
+      --base-url \"\$BASE_URL\" \\
+      --model \"\$MODEL_PATH\" \\
+      --served-model-name \"\$SERVED_MODEL_NAME\" \\
+      --dataset-name ${DATASET_NAME} \\
+      --random-input-len \$INPUT_LEN \\
+      --random-output-len \$OUTPUT_LEN \\
+      --random-range-ratio 1.0 \\
+      --num-prompts \$NUM_PROMPTS \\
+      --max-concurrency \$CONCURRENCY \\
+      --seed ${SEED}
+  done
+done"
+elif [[ "$FRAMEWORK" == "vllm" ]]; then
+  BENCH_COMMANDS="# 并发数列表: ${CONCURRENCY_STR}
+# IO 组合: ${IO_STR}
+for CONCURRENCY in ${CONC_LIST}; do
+  NUM_PROMPTS=\$CONCURRENCY
+  for IO in ${IO_QUOTED}; do
+    INPUT_LEN=\$(echo \"\$IO\" | awk '{print \$1}')
+    OUTPUT_LEN=\$(echo \"\$IO\" | awk '{print \$2}')
+    vllm bench serve \\
+      --backend openai-chat \\
+      --endpoint /v1/chat/completions \\
+      --base-url \"\$BASE_URL\" \\
+      --model \"\$MODEL_PATH\" \\
+      --served-model-name \"\$SERVED_MODEL_NAME\" \\
+      --dataset-name ${DATASET_NAME} \\
+      --random-input-len \$INPUT_LEN \\
+      --random-output-len \$OUTPUT_LEN \\
+      --num-prompts \$NUM_PROMPTS \\
+      --max-concurrency \$CONCURRENCY \\
+      --trust-remote-code \\
+      --temperature 0.7 \\
+      --random-range-ratio 0.0 \\
+      --random-prefix-len 0 \\
+      --seed ${SEED} \\
+      --metric_percentiles 95,99 \\
+      --ready-check-timeout-sec 30
+  done
+done"
+fi
+
 # --- 自动收集结果生成 CSV ---
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CSV_FILE="${REPORT_DIR}/${safe_model_name}/results.csv"
+CSV_FILE="${REPORT_DIR}/${safe_model_name}/results_${RUN_TS}.csv"
 python3 "${SCRIPT_DIR}/collect_results.py" \
   --report-dir "$REPORT_DIR/${safe_model_name}" \
   --model-name "$SERVED_MODEL_NAME" \
   --framework "$FRAMEWORK" \
   --chip-type "$CHIP_TYPE" \
   --out "$CSV_FILE"
+
+# --- 自动生成 Markdown 测试报告 ---
+MD_FILE="${CSV_FILE%.csv}_report.md"
+python3 "${SCRIPT_DIR}/csv_to_md.py" \
+  --csv "$CSV_FILE" \
+  --output "$MD_FILE" \
+  --bench-command "$BENCH_COMMANDS"
 ```
 
 ### 1.5 使用方法
@@ -323,8 +408,8 @@ python3 "${SCRIPT_DIR}/collect_results.py" \
 # SGLang（默认后台执行，自动 nohup + 日志重定向）
 ./bench.sh -F sglang \
   -u http://127.0.0.1:8080 \
-  -m /data1/DeepSeek-V4-Flash-INT8-Channel \
-  -n dsv4-flash \
+  -m /data1/GLM-5.2-Channel-FP8-w8a8 \
+  -n glm-5.2-fp8 \
   -t H100
 
 # vLLM
@@ -372,7 +457,7 @@ python3 "${SCRIPT_DIR}/collect_results.py" \
 | 参数 | 简写 | 说明 | 默认值 |
 |---|---|---|---|
 | `--framework` | `-F` | **必选** 推理框架类型: `sglang` 或 `vllm` | — |
-| `--base-url` | `-u` | 推理服务地址 | `http://127.0.0.1:8080`(SGLang) / `8000`(vLLM) |
+| `--base-url` | `-u` | 推理服务地址 | `http://127.0.0.1:8080` |
 | `--model-path` | `-m` | 模型路径 | 脚本内置默认值 |
 | `--served-model-name` | `-n` | 服务模型名（取 `/` `\` 分割后最后一段，清除 `:` `\` 作为目录名） | 脚本内置默认值 |
 | `--report-dir` | `-r` | 报告输出目录 | `./sglang_reports` / `./vllm_reports`（按框架自动选择） |
@@ -432,10 +517,10 @@ Mean TPOT (ms):  9.25                         ← Mean TPOT
 
 所有 bench 脚本在测试结束后会**自动调用** `collect_results.py` 扫描日志目录，生成汇总 CSV，随后**自动调用** `csv_to_md.py` 将 CSV 转换为 Markdown 测试报告，无需手动操作。
 
-生成的文件位置：
-- **Benchmark**：`{report-dir}/{model_name}/results.csv` + `results_report.md`
-- **纯 Prefill**：`{report-dir}/{model_name}/prefill_results.csv` + `prefill_results_report.md`
-- **纯 Decode**：`{report-dir}/{model_name}/decode_results.csv` + `decode_results_report.md`
+生成的文件位置（`{TS}` 为运行时间戳 `YYYYMMDD_HHMMSS`，避免重复执行时覆盖）：
+- **Benchmark**：`{report-dir}/{model_name}/input_len-{IL}-output_len-{OL}-bs-{N}_{TS}.log` → `results_{TS}.csv` → `results_{TS}_report.md`
+- **纯 Prefill**：`{report-dir}/{model_name}/prefill_input-{IL}-bs-{N}_{TS}.log` → `prefill_results_{TS}.csv` → `prefill_results_{TS}_report.md`
+- **纯 Decode**：`{report-dir}/{model_name}/decode_prefix-{PL}-output-{OL}-bs-{N}_{TS}.log` → `decode_results_{TS}.csv` → `decode_results_{TS}_report.md`
 
 CSV 表头（`-t` 指定芯片类型后，列名带后缀）：
 
@@ -447,19 +532,19 @@ CSV 示例：
 
 ```
 模型名称,推理框架,输入长度,输出长度,并发数,输入token吞吐量_H100 (toks/s),输出token吞吐量_H100 (toks/s),总token吞吐量_H100 (toks/s),Mean TTFT_H100 (ms),P99 TTFT_H100 (ms),Mean TPOT_H100 (ms)
-dsv4-flash,sglang,2048,512,1,152.79,95.49,3915.14,321.42,1181.54,9.25
-dsv4-flash,sglang,8192,1024,128,152.64,152.64,305.28,321.42,1181.54,9.25
+glm-5.2-fp8,sglang,2048,512,1,152.79,95.49,3915.14,321.42,1181.54,9.25
+glm-5.2-fp8,sglang,8192,1024,128,152.64,152.64,305.28,321.42,1181.54,9.25
 ```
 
 也可以**手动执行**收集脚本（如只收集已有日志）：
 
 ```bash
 python3 _scripts/collect_results.py \
-  --report-dir ./sglang_reports/dsv4-flash \
-  --model-name dsv4-flash \
+  --report-dir ./sglang_reports/glm-5.2-fp8 \
+  --model-name glm-5.2-fp8 \
   --framework sglang \
   --chip-type H100 \
-  --out ./sglang_reports/dsv4-flash/results.csv
+  --out ./sglang_reports/glm-5.2-fp8/results.csv
 ```
 
 > **注意**：vLLM 的 `bench serve` 不直接输出"输入 token 吞吐量"，
@@ -473,7 +558,7 @@ CSV 生成后，脚本会**自动调用** `csv_to_md.py` 将 CSV 转换为 Markd
 |---|---|---|
 | **一、测试结果** | CSV 文件自动转换 | 将 CSV 数据转为 Markdown 表格 |
 | **二、模型服务启动命令** | `serve_command.txt` 文件 | 需从 `serve_command_template.txt` 复制并填写真实命令；找不到则报错 |
-| **三、Benchmark 测试命令** | 脚本自动记录 | 捕获实际执行的 bench 工具命令（`python -m sglang.bench_serving ...` / `vllm bench serve ...`），按参数组合依次列出 |
+| **三、Benchmark 测试命令** | 脚本自动生成 | 以循环语句形式合并所有参数组合，变量用占位符表示（如 `$CONCURRENCY`、`$INPUT_LEN`），而非逐条列出 |
 
 > **`serve_command.txt`**：需从 `serve_command_template.txt` 复制并填写真实模型服务启动命令（如 `python -m sglang.launch_server ...`）。
 > `csv_to_md.py` 会自动读取其内容填入报告第二部分。模板见 `benchmark_analysis_template.md`。
@@ -482,8 +567,8 @@ CSV 生成后，脚本会**自动调用** `csv_to_md.py` 将 CSV 转换为 Markd
 
 ```bash
 python3 _scripts/csv_to_md.py \
-  --csv ./sglang_reports/dsv4-flash/results.csv \
-  --output ./sglang_reports/dsv4-flash/results_report.md \
+  --csv ./sglang_reports/glm-5.2-fp8/results.csv \
+  --output ./sglang_reports/glm-5.2-fp8/results_report.md \
   --bench-command "python -m sglang.bench_serving --backend sglang-oai-chat --base-url http://127.0.0.1:8080 ..."
 ```
 
@@ -504,9 +589,9 @@ python -m sglang.launch_server \
   --served-model-name glm-5.2-fp8 \
   --host 0.0.0.0 \
   --port 8080 \
-  --context-length 131072 \
+  --context-length 202752 \
   --max-running-requests 64 \
-  --chunked-prefill-size 8192 \
+  --chunked-prefill-size 16384 \
   --mem-fraction-static 0.9 \
   --tp 8 \
   --dp 1 \
@@ -523,9 +608,9 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
   --served-model-name glm-5.2-fp8 \
   --host 0.0.0.0 \
   --port 8000 \
-  --max-model-len 131072 \
+  --max-model-len 202752 \
   --max-num-seqs 64 \
-  --max-num-batched-tokens 8192 \
+  --max-num-batched-tokens 16384 \
   --gpu-memory-utilization 0.9 \
   -tp 8 \
   -dp 1 \
@@ -561,21 +646,9 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 | 推理解析器 | `--reasoning-parser` | `--reasoning-parser` | 如 `glm45`，解析思维链标签 |
 
 > **提示**：
-> - `--tool-call-parser` 和 `--reasoning-parser` 的具体值取决于模型架构，常见值见下表，请按实际模型选择。
+> - `--tool-call-parser` 和 `--reasoning-parser` 的具体值取决于模型架构，请按实际模型选择。
 > - 纯 Decode 测试部署时**不要加** `--disable-radix-cache` / `--no-enable-prefix-caching`，否则共享前缀无法命中缓存。
 > - 纯 Prefill 和纯 Decode 测试需**分别部署**独立服务实例，缓存开关要求相反。
-
-| 模型类型 | SGLang `--tool-call-parser` | SGLang `--reasoning-parser` | vLLM `--tool-call-parser` | vLLM `--reasoning-parser` |
-|---|---|---|---|---|
-| DeepSeek-R1 / V3 | `deepseekv3` | `deepseek-r1` | `deepseek` | `deepseek_r1` |
-| DeepSeek-V3.1 | `deepseekv31` | `deepseek-v3` | `deepseek` | `deepseek_r1` |
-| Qwen2.5 | `qwen25` | — | `qwen` | — |
-| Qwen3 | `qwen25` | `qwen3` | `qwen` | `qwen3` |
-| GLM-4.5 / GLM-4.7 | `glm45` / `glm47` | `glm45` | `glm` | — |
-| Kimi K2 | `kimi_k2` | `kimi` | `kimi` | — |
-| Llama3 | `llama3` | — | `llama3_json` | — |
-| Mistral | `mistral` | — | `mistral` | — |
-| Step3 | `step3` | `step3` | `step` | — |
 
 ---
 
@@ -626,9 +699,9 @@ python -m sglang.launch_server \
   --served-model-name glm-5.2-fp8 \
   --host 0.0.0.0 \
   --port 8080 \
-  --context-length 131072 \
+  --context-length 202752 \
   --max-running-requests 64 \
-  --chunked-prefill-size 8192 \
+  --chunked-prefill-size 16384 \
   --mem-fraction-static 0.9 \
   --tp 8 \
   --dp 1 \
@@ -646,9 +719,9 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
   --served-model-name glm-5.2-fp8 \
   --host 0.0.0.0 \
   --port 8000 \
-  --max-model-len 131072 \
+  --max-model-len 202752 \
   --max-num-seqs 64 \
-  --max-num-batched-tokens 8192 \
+  --max-num-batched-tokens 16384 \
   --gpu-memory-utilization 0.9 \
   -tp 8 \
   -dp 1 \
@@ -670,9 +743,9 @@ python -m sglang.launch_server \
   --served-model-name glm-5.2-fp8 \
   --host 0.0.0.0 \
   --port 8080 \
-  --context-length 131072 \
+  --context-length 202752 \
   --max-running-requests 64 \
-  --chunked-prefill-size 8192 \
+  --chunked-prefill-size 16384 \
   --mem-fraction-static 0.9 \
   --tp 8 \
   --dp 1 \
@@ -689,9 +762,9 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
   --served-model-name glm-5.2-fp8 \
   --host 0.0.0.0 \
   --port 8000 \
-  --max-model-len 131072 \
+  --max-model-len 202752 \
   --max-num-seqs 64 \
-  --max-num-batched-tokens 8192 \
+  --max-num-batched-tokens 16384 \
   --gpu-memory-utilization 0.9 \
   -tp 8 \
   -dp 1 \
@@ -735,7 +808,7 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 ```bash
 # SGLang 服务端示例（关闭前缀缓存）
 python -m sglang.launch_server \
-  --model-path /data1/DeepSeek-V4-Flash-INT8-Channel \
+  --model-path /data1/GLM-5.2-Channel-FP8-w8a8 \
   --tp 8 --port 8080 \
   --disable-radix-cache
 
@@ -765,8 +838,8 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 # SGLang 纯 Prefill
 ./prefill_bench.sh -F sglang \
   -u http://127.0.0.1:8080 \
-  -m /data1/DeepSeek-V4-Flash-INT8-Channel \
-  -n dsv4-flash -t H100
+  -m /data1/GLM-5.2-Channel-FP8-w8a8 \
+  -n glm-5.2-fp8 -t H100
 
 # vLLM 纯 Prefill
 ./prefill_bench.sh -F vllm \
@@ -893,7 +966,7 @@ vllm bench serve \
 ```bash
 # SGLang 服务端示例（前缀缓存保持开启 = 默认）
 python -m sglang.launch_server \
-  --model-path /data1/DeepSeek-V4-Flash-INT8-Channel \
+  --model-path /data1/GLM-5.2-Channel-FP8-w8a8 \
   --tp 8 --port 8080
   # 不加 --disable-radix-cache
 
@@ -938,8 +1011,8 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 # SGLang 纯 Decode（使用 generated-shared-prefix 数据集，保证共享前缀）
 ./decode_bench.sh -F sglang \
   -u http://127.0.0.1:8080 \
-  -m /data1/DeepSeek-V4-Flash-INT8-Channel \
-  -n dsv4-flash -t H100 \
+  -m /data1/GLM-5.2-Channel-FP8-w8a8 \
+  -n glm-5.2-fp8 -t H100 \
   -p 4096,32768,65536 \
   -o 1024 \
   -c 1,4,8,16,32,64,128
@@ -1024,6 +1097,8 @@ vllm bench serve \
 > 稀释首个请求的 prefill 开销，但 TTFT 仍受首请求污染。若需精确测量 TTFT/TPOT，使用下方 HTTP 脚本。
 
 #### 2.3.5 测试脚本（HTTP 精确测量）
+
+> **说明**：本节介绍的 `decode_http_sweep.py` 为补充测量方法，实际测试中通常不使用，**仅供了解参考**。标准测试流程使用 2.3.4 节的 `decode_bench.sh`（基于 bench 工具）即可满足需求。仅当需要流式 SSE 精确测量 TTFT/TPOT、或验证 bench 工具结果时，可参考此方法。
 
 **`_scripts/decode_http_sweep.py`** — 零第三方依赖，流式 SSE 精确测量 TTFT/TPOT。
 
@@ -1143,13 +1218,14 @@ HBM 带宽 / NCCL 通信），构建 roofline 上界，计算 MFU 达成率。
 ```
 general-benchmark-test/
 ├── Model_Inference_Benchmark_TestStrategy.md   本文档
+├── README.md                                   快速参考指南（三种测试对比、执行命令、参数说明）
 ├── benchmark_analysis_template.md              Markdown 报告模板
 ├── serve_command_template.txt                  模型服务启动命令模板（需复制为 serve_command.txt 填写真实命令）
 └── _scripts/
     ├── bench.sh                                第1章 benchmark 脚本（统一，-F 指定 sglang/vllm）
     ├── prefill_bench.sh                        第2章 纯 Prefill 脚本（统一，-F 指定 sglang/vllm）
     ├── decode_bench.sh                         第2章 纯 Decode 脚本（统一，SGLang 用 GSP / vLLM 用 prefix-repetition）
-    ├── decode_http_sweep.py                    第2章 纯 Decode HTTP 精确测量（零依赖，流式 SSE）
+    ├── decode_http_sweep.py                    第2章 纯 Decode HTTP 精确测量（零依赖，流式 SSE）【仅供参考，实际不使用】
     ├── collect_results.py                      ★ 自动收集日志结果生成 CSV（所有脚本结束后自动调用）
     └── csv_to_md.py                            ★ 将 CSV 转换为 Markdown 测试报告（自动调用）
 ```
@@ -1161,7 +1237,7 @@ general-benchmark-test/
 | `bench.sh` | `sglang` (bench_serving) / `vllm` (bench serve) | 统一脚本，`-F` 指定框架 |
 | `prefill_bench.sh` | `sglang` / `vllm` | output_len=1 变体，`-F` 指定框架 |
 | `decode_bench.sh` | `sglang` / `vllm` | SGLang 用 GSP / vLLM 用 prefix-repetition，`num_prompts = 2×并发` 稀释首请求 prefill |
-| `decode_http_sweep.py` | **仅 Python 标准库** | 零第三方依赖，跨框架/跨厂商可用 |
+| `decode_http_sweep.py` | **仅 Python 标准库** | 零第三方依赖，跨框架/跨厂商可用【仅供参考，实际测试不使用】 |
 | `collect_results.py` | **仅 Python 标准库** | 扫描日志提取指标生成 CSV，所有脚本结束后自动调用 |
 | `csv_to_md.py` | **仅 Python 标准库** | 将 CSV 转换为 Markdown 测试报告（三部分：结果表格 + 服务启动命令 + 测试命令），自动读取 `serve_command.txt`，找不到或为空则报错 |
 | `serve_command_template.txt` | — | 模板文件，执行者复制为 `serve_command.txt` 并填写真实模型服务启动命令 |

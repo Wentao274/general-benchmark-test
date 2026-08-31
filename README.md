@@ -13,7 +13,7 @@ general-benchmark-test/
     ├── bench.sh                                基础 Benchmark 脚本
     ├── prefill_bench.sh                        纯 Prefill 测试脚本
     ├── decode_bench.sh                         纯 Decode 测试脚本
-    ├── decode_http_sweep.py                    纯 Decode HTTP 精确测量
+    ├── decode_http_sweep.py                    纯 Decode HTTP 精确测量【仅供参考，实际不使用】
     ├── collect_results.py                      日志收集 → CSV
     └── csv_to_md.py                            CSV → Markdown 报告
 ```
@@ -44,8 +44,8 @@ general-benchmark-test/
 # SGLang
 ./_scripts/bench.sh -F sglang \
   -u http://127.0.0.1:8080 \
-  -m /data1/DeepSeek-V4-Flash-INT8-Channel \
-  -n dsv4-flash -t H100
+  -m /data1/GLM-5.2-Channel-FP8-w8a8 \
+  -n glm-5.2-fp8 -t H100
 
 # vLLM
 ./_scripts/bench.sh -F vllm \
@@ -86,9 +86,11 @@ general-benchmark-test/
 
 ### 产物
 
-- 日志：`{report-dir}/{model_name}/input_len-{in}-output_len-{out}-bs-{concurrency}.log`
-- CSV：`{report-dir}/{model_name}/results.csv`
-- Markdown 报告：`{report-dir}/{model_name}/results_report.md`
+每次测试单独创建带时间戳的子目录 `{TS}`（`YYYYMMDD_HHMMSS`），重复执行不会覆盖：
+
+- 日志：`{report-dir}/{model_name}/{TS}/input_len-{in}-output_len-{out}-bs-{concurrency}.log`
+- CSV：`{report-dir}/{model_name}/{TS}/results.csv`
+- Markdown 报告：`{report-dir}/{model_name}/{TS}/results_report.md`
 
 ---
 
@@ -103,7 +105,7 @@ general-benchmark-test/
 ```bash
 # SGLang — 加 --disable-radix-cache
 python -m sglang.launch_server \
-  --model-path /data1/DeepSeek-V4-Flash-INT8-Channel \
+  --model-path /data1/GLM-5.2-Channel-FP8-w8a8 \
   --tp 8 --port 8080 \
   --disable-radix-cache
 
@@ -120,8 +122,8 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 # SGLang 纯 Prefill
 ./_scripts/prefill_bench.sh -F sglang \
   -u http://127.0.0.1:8080 \
-  -m /data1/DeepSeek-V4-Flash-INT8-Channel \
-  -n dsv4-flash -t H100
+  -m /data1/GLM-5.2-Channel-FP8-w8a8 \
+  -n glm-5.2-fp8 -t H100
 
 # vLLM 纯 Prefill
 ./_scripts/prefill_bench.sh -F vllm \
@@ -154,9 +156,9 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 
 ### 产物
 
-- 日志：`{report-dir}/{model_name}/prefill_input-{in}-bs-{concurrency}.log`
-- CSV：`{report-dir}/{model_name}/prefill_results.csv`
-- Markdown 报告：`{report-dir}/{model_name}/prefill_results_report.md`
+- 日志：`{report-dir}/{model_name}/{TS}/prefill_input-{in}-bs-{concurrency}.log`
+- CSV：`{report-dir}/{model_name}/{TS}/prefill_results.csv`
+- Markdown 报告：`{report-dir}/{model_name}/{TS}/prefill_results_report.md`
 
 ### 关注指标
 
@@ -177,7 +179,7 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 ```bash
 # SGLang — 默认开启，不要加 --disable-radix-cache
 python -m sglang.launch_server \
-  --model-path /data1/DeepSeek-V4-Flash-INT8-Channel \
+  --model-path /data1/GLM-5.2-Channel-FP8-w8a8 \
   --tp 8 --port 8080
 
 # vLLM — 默认开启，不要加 --no-enable-prefix-caching
@@ -192,8 +194,8 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 # SGLang 纯 Decode（使用 generated-shared-prefix 数据集）
 ./_scripts/decode_bench.sh -F sglang \
   -u http://127.0.0.1:8080 \
-  -m /data1/DeepSeek-V4-Flash-INT8-Channel \
-  -n dsv4-flash -t H100 \
+  -m /data1/GLM-5.2-Channel-FP8-w8a8 \
+  -n glm-5.2-fp8 -t H100 \
   -p 4096,32768,65536 \
   -o 1024 \
   -c 1,4,8,16,32,64,128
@@ -233,9 +235,9 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 
 ### 产物
 
-- 日志：`{report-dir}/{model_name}/decode_prefix-{prefix}-output-{out}-bs-{concurrency}.log`
-- CSV：`{report-dir}/{model_name}/decode_results.csv`
-- Markdown 报告：`{report-dir}/{model_name}/decode_results_report.md`
+- 日志：`{report-dir}/{model_name}/{TS}/decode_prefix-{prefix}-output-{out}-bs-{concurrency}.log`
+- CSV：`{report-dir}/{model_name}/{TS}/decode_results.csv`
+- Markdown 报告：`{report-dir}/{model_name}/{TS}/decode_results_report.md`
 
 ### 关注指标
 
@@ -269,8 +271,8 @@ Markdown 报告分三部分：
 
 ```bash
 python3 _scripts/csv_to_md.py \
-  --csv ./sglang_reports/dsv4-flash/results.csv \
-  --output ./sglang_reports/dsv4-flash/results_report.md \
+  --csv ./sglang_reports/glm-5.2-fp8/20260831_143022/results.csv \
+  --output ./sglang_reports/glm-5.2-fp8/20260831_143022/results_report.md \
   --bench-command "python -m sglang.bench_serving --backend sglang-oai-chat ..."
 ```
 

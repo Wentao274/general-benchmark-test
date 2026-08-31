@@ -12,7 +12,7 @@
     纯 decode 用 prefix_len>>0 + input_len=1 + output_len>>0（prefill 命中缓存，全 decode）。
 
 为什么用 token id 而不是文本 prompt:
-    与 prefill_http_sweep.py 一致——长度精确、跨框架可比、绕开 chat template。
+    长度精确、跨框架可比、绕开 chat template。
     共享前缀用固定随机种子生成，所有请求复用同一段 token id 序列，保证缓存命中。
 
 为什么用 streaming:

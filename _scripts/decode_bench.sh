@@ -27,8 +27,8 @@ set -euo pipefail
 # --- 默认配置 ---
 FRAMEWORK=""
 BASE_URL="${BASE_URL:-http://127.0.0.1:8080}"
-MODEL_PATH="${MODEL_PATH:-/data1/DeepSeek-V4-Flash-INT8-Channel}"
-SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-dsv4-flash}"
+MODEL_PATH="${MODEL_PATH:-/data1/GLM-5.2-Channel-FP8-w8a8}"
+SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-glm-5.2-fp8}"
 SEED=123
 SLEEP_TIME=60
 REPORT_DIR=""
@@ -139,6 +139,7 @@ fi
 if [[ "$BACKGROUND" == "true" ]]; then
   mkdir -p "$REPORT_DIR"
   LOG_FILE="${REPORT_DIR}/${LOG_PREFIX}_$(date +%Y%m%d_%H%M%S).log"
+  # 重新启动自身（带 --foreground 强制前台），输出重定向到日志文件
   nohup "$0" \
     --framework "$FRAMEWORK" \
     --base-url "$BASE_URL" \
@@ -149,8 +150,8 @@ if [[ "$BACKGROUND" == "true" ]]; then
     --output-lens "${OUTPUT_LENS_ARG:-$DEFAULT_OUTPUT_LENS}" \
     --concurrency "${CONCURRENCY_ARG:-$DEFAULT_CONCURRENCY}" \
     --sleep "$SLEEP_TIME" \
-     --chip-type "$CHIP_TYPE" \
-     --foreground \
+    --chip-type "$CHIP_TYPE" \
+    --foreground \
     > "$LOG_FILE" 2>&1 &
   PID=$!
   echo "${BENCH_LABEL} decode benchmark 已在后台启动 (PID: $PID)"
@@ -169,7 +170,13 @@ IFS=',' read -ra output_lens <<< "$OUTPUT_LENS_STR"
 IFS=',' read -ra concurrency_list <<< "$CONCURRENCY_STR"
 
 safe_model_name=$(echo "$SERVED_MODEL_NAME" | sed 's/.*[\/\\]//; s/[:\\]//g')
-mkdir -p "$REPORT_DIR/${safe_model_name}"
+
+# --- 运行时间戳（作为本次测试的子目录名，避免覆盖） ---
+RUN_TS=$(date +%Y%m%d_%H%M%S)
+
+# --- 创建报告目录 ---
+RUN_DIR="$REPORT_DIR/${safe_model_name}/${RUN_TS}"
+mkdir -p "$RUN_DIR"
 
 echo "=========================================="
 echo "=== Starting ${BENCH_LABEL} Pure Decode Benchmark ==="
@@ -177,7 +184,7 @@ echo "=== Framework:    $FRAMEWORK"
 echo "=== Base URL:     $BASE_URL"
 echo "=== Model Path:   $MODEL_PATH"
 echo "=== Served Name:  $SERVED_MODEL_NAME"
-echo "=== Report Dir:   $REPORT_DIR/${safe_model_name}"
+echo "=== Report Dir:   $RUN_DIR"
 echo "=== Prefix Lens:  ${prefix_lens[*]}"
 echo "=== Output Lens:   ${output_lens[*]}"
 echo "=== Concurrency:  ${concurrency_list[*]}"
@@ -189,34 +196,17 @@ fi
 echo "=== 前缀缓存:      ON (必须开启) ==="
 echo "=========================================="
 
-# --- 累积实际执行的 bench 工具命令（用于报告第三部分） ---
-BENCH_COMMANDS=""
-
 for prefix_len in "${prefix_lens[@]}"; do
   for output_len in "${output_lens[@]}"; do
     for concurrency in "${concurrency_list[@]}"; do
       # num_prompts = 2 × 并发数，稀释首个请求的 prefill 开销
       num_prompts=$((concurrency * 2))
-      log_file="${REPORT_DIR}/${safe_model_name}/decode_prefix-${prefix_len}-output-${output_len}-bs-${concurrency}.log"
+      log_file="${RUN_DIR}/decode_prefix-${prefix_len}-output-${output_len}-bs-${concurrency}.log"
       echo ""
       echo ">>> Decode: Prefix=$prefix_len, Output=$output_len, Concurrency=$concurrency, NumPrompts=$num_prompts"
       echo ">>> Log file: $log_file"
 
       if [[ "$FRAMEWORK" == "sglang" ]]; then
-        BENCH_CMD="python -m sglang.bench_serving \\
-  --backend sglang-oai-chat \\
-  --base-url \"$BASE_URL\" \\
-  --model \"$MODEL_PATH\" \\
-  --served-model-name \"$SERVED_MODEL_NAME\" \\
-  --dataset-name generated-shared-prefix \\
-  --gsp-num-groups 1 \\
-  --gsp-prompts-per-group $num_prompts \\
-  --gsp-system-prompt-len $prefix_len \\
-  --gsp-question-len 1 \\
-  --gsp-output-len $output_len \\
-  --num-prompts $num_prompts \\
-  --max-concurrency $concurrency \\
-  --seed $SEED"
         # SGLang: generated-shared-prefix (GSP)
         # 所有请求共享同一前缀，保证缓存命中
         python -m sglang.bench_serving \
@@ -235,24 +225,6 @@ for prefix_len in "${prefix_lens[@]}"; do
           --seed "$SEED" \
           > "$log_file" 2>&1
       elif [[ "$FRAMEWORK" == "vllm" ]]; then
-        BENCH_CMD="vllm bench serve \\
-  --backend openai-chat \\
-  --endpoint /v1/chat/completions \\
-  --base-url \"$BASE_URL\" \\
-  --model \"$MODEL_PATH\" \\
-  --served-model-name \"$SERVED_MODEL_NAME\" \\
-  --dataset-name prefix-repetition \\
-  --prefix-repetition-prefix-len $prefix_len \\
-  --prefix-repetition-suffix-len 1 \\
-  --prefix-repetition-num-prefixes 1 \\
-  --prefix-repetition-output-len $output_len \\
-  --num-prompts $num_prompts \\
-  --max-concurrency $concurrency \\
-  --trust-remote-code \\
-  --temperature 0.7 \\
-  --seed $SEED \\
-  --metric_percentiles 95,99 \\
-  --ready-check-timeout-sec 30"
         # vLLM: prefix-repetition
         # num-prefixes=1 → 所有请求共享同一前缀
         vllm bench serve \
@@ -276,12 +248,6 @@ for prefix_len in "${prefix_lens[@]}"; do
           > "$log_file" 2>&1
       fi
 
-      # --- 累积 bench 工具命令用于报告 ---
-      BENCH_COMMANDS="${BENCH_COMMANDS}# Prefix=$prefix_len Output=$output_len Concurrency=$concurrency
-${BENCH_CMD}
-
-"
-
       if [ $? -ne 0 ]; then
         echo "!!! Error occurred. Check log file: $log_file"
       else
@@ -295,13 +261,74 @@ done
 
 echo ""
 echo "=== All decode tests finished ==="
-echo "=== Check results in: $REPORT_DIR/${safe_model_name} ==="
+echo "=== Check results in: $RUN_DIR ==="
+
+# --- 构建 BENCH_COMMANDS（循环模板，变量占位，用于报告第三部分） ---
+PREFIX_LIST="${prefix_lens[*]}"
+OUTPUT_LIST="${output_lens[*]}"
+CONC_LIST="${concurrency_list[*]}"
+
+if [[ "$FRAMEWORK" == "sglang" ]]; then
+  BENCH_COMMANDS="# 前缀长度列表: ${PREFIX_LENS_STR}
+# 输出长度列表: ${OUTPUT_LENS_STR}
+# 并发数列表: ${CONCURRENCY_STR}
+for PREFIX_LEN in ${PREFIX_LIST}; do
+  for OUTPUT_LEN in ${OUTPUT_LIST}; do
+    for CONCURRENCY in ${CONC_LIST}; do
+      NUM_PROMPTS=\$((CONCURRENCY * 2))
+      python -m sglang.bench_serving \\
+        --backend sglang-oai-chat \\
+        --base-url \"\$BASE_URL\" \\
+        --model \"\$MODEL_PATH\" \\
+        --served-model-name \"\$SERVED_MODEL_NAME\" \\
+        --dataset-name generated-shared-prefix \\
+        --gsp-num-groups 1 \\
+        --gsp-prompts-per-group \$NUM_PROMPTS \\
+        --gsp-system-prompt-len \$PREFIX_LEN \\
+        --gsp-question-len 1 \\
+        --gsp-output-len \$OUTPUT_LEN \\
+        --num-prompts \$NUM_PROMPTS \\
+        --max-concurrency \$CONCURRENCY \\
+        --seed ${SEED}
+    done
+  done
+done"
+elif [[ "$FRAMEWORK" == "vllm" ]]; then
+  BENCH_COMMANDS="# 前缀长度列表: ${PREFIX_LENS_STR}
+# 输出长度列表: ${OUTPUT_LENS_STR}
+# 并发数列表: ${CONCURRENCY_STR}
+for PREFIX_LEN in ${PREFIX_LIST}; do
+  for OUTPUT_LEN in ${OUTPUT_LIST}; do
+    for CONCURRENCY in ${CONC_LIST}; do
+      NUM_PROMPTS=\$((CONCURRENCY * 2))
+      vllm bench serve \\
+        --backend openai-chat \\
+        --endpoint /v1/chat/completions \\
+        --base-url \"\$BASE_URL\" \\
+        --model \"\$MODEL_PATH\" \\
+        --served-model-name \"\$SERVED_MODEL_NAME\" \\
+        --dataset-name prefix-repetition \\
+        --prefix-repetition-prefix-len \$PREFIX_LEN \\
+        --prefix-repetition-suffix-len 1 \\
+        --prefix-repetition-num-prefixes 1 \\
+        --prefix-repetition-output-len \$OUTPUT_LEN \\
+        --num-prompts \$NUM_PROMPTS \\
+        --max-concurrency \$CONCURRENCY \\
+        --trust-remote-code \\
+        --temperature 0.7 \\
+        --seed ${SEED} \\
+        --metric_percentiles 95,99 \\
+        --ready-check-timeout-sec 30
+    done
+  done
+done"
+fi
 
 # --- 自动收集结果生成 CSV ---
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CSV_FILE="${REPORT_DIR}/${safe_model_name}/decode_results.csv"
+CSV_FILE="${RUN_DIR}/decode_results.csv"
 python3 "${SCRIPT_DIR}/collect_results.py" \
-  --report-dir "$REPORT_DIR/${safe_model_name}" \
+  --report-dir "$RUN_DIR" \
   --model-name "$SERVED_MODEL_NAME" \
   --framework "$FRAMEWORK" \
   --chip-type "$CHIP_TYPE" \

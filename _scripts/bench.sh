@@ -20,8 +20,8 @@ set -euo pipefail
 # --- 默认配置 ---
 FRAMEWORK=""
 BASE_URL="${BASE_URL:-http://127.0.0.1:8080}"
-MODEL_PATH="${MODEL_PATH:-/data1/DeepSeek-V4-Flash-INT8-Channel}"
-SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-dsv4-flash}"
+MODEL_PATH="${MODEL_PATH:-/data1/GLM-5.2-Channel-FP8-w8a8}"
+SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-glm-5.2-fp8}"
 SEED=123
 SLEEP_TIME=60
 REPORT_DIR=""
@@ -126,7 +126,6 @@ fi
 if [[ "$BACKGROUND" == "true" ]]; then
   mkdir -p "$REPORT_DIR"
   LOG_FILE="${REPORT_DIR}/${LOG_PREFIX}_$(date +%Y%m%d_%H%M%S).log"
-  # 重新启动自身（带 --foreground 强制前台），输出重定向到日志文件
   nohup "$0" \
     --framework "$FRAMEWORK" \
     --base-url "$BASE_URL" \
@@ -136,8 +135,8 @@ if [[ "$BACKGROUND" == "true" ]]; then
     --concurrency "${CONCURRENCY_ARG:-$DEFAULT_CONCURRENCY}" \
     --io-combinations "${IO_ARG:-$DEFAULT_IO}" \
     --sleep "$SLEEP_TIME" \
-     --chip-type "$CHIP_TYPE" \
-     --foreground \
+    --chip-type "$CHIP_TYPE" \
+    --foreground \
     > "$LOG_FILE" 2>&1 &
   PID=$!
   echo "${BENCH_LABEL} benchmark 已在后台启动 (PID: $PID)"
@@ -158,8 +157,12 @@ IFS=',' read -ra io_combinations <<< "$IO_STR"
 # --- 提取模型服务名最后一段（以 / \ 分割），并清除残留 : \，用于目录创建 ---
 safe_model_name=$(echo "$SERVED_MODEL_NAME" | sed 's/.*[\/\\]//; s/[:\\]//g')
 
+# --- 运行时间戳（作为本次测试的子目录名，避免覆盖） ---
+RUN_TS=$(date +%Y%m%d_%H%M%S)
+
 # --- 创建报告目录 ---
-mkdir -p "$REPORT_DIR/${safe_model_name}"
+RUN_DIR="$REPORT_DIR/${safe_model_name}/${RUN_TS}"
+mkdir -p "$RUN_DIR"
 
 echo "=========================================="
 echo "=== Starting ${BENCH_LABEL} Benchmark Suite ==="
@@ -167,14 +170,11 @@ echo "=== Framework:    $FRAMEWORK"
 echo "=== Base URL:     $BASE_URL"
 echo "=== Model Path:   $MODEL_PATH"
 echo "=== Served Name:  $SERVED_MODEL_NAME"
-echo "=== Report Dir:   $REPORT_DIR/${safe_model_name}"
+echo "=== Report Dir:   $RUN_DIR"
 echo "=== Concurrency:  ${concurrency_list[*]}"
 echo "=== IO Combos:     ${io_combinations[*]}"
 echo "=== Chip Type:    ${CHIP_TYPE:-(未指定)}"
 echo "=========================================="
-
-# --- 累积实际执行的 bench 工具命令（用于报告第三部分） ---
-BENCH_COMMANDS=""
 
 # 外层循环：遍历不同的并发值
 for concurrency in "${concurrency_list[@]}"; do
@@ -190,7 +190,7 @@ for concurrency in "${concurrency_list[@]}"; do
     output_len=$(echo "$combo" | awk '{print $2}')
 
     # 构建日志文件路径
-    log_file="${REPORT_DIR}/${safe_model_name}/input_len-${input_len}-output_len-${output_len}-bs-${num_prompts}.log"
+    log_file="${RUN_DIR}/input_len-${input_len}-output_len-${output_len}-bs-${num_prompts}.log"
 
     echo ""
     echo ">>> Running test: Input=$input_len, Output=$output_len, Concurrency=$concurrency"
@@ -198,18 +198,6 @@ for concurrency in "${concurrency_list[@]}"; do
 
     # --- 根据框架选择对应的 bench 命令 ---
     if [[ "$FRAMEWORK" == "sglang" ]]; then
-      BENCH_CMD="python -m sglang.bench_serving \\
-  --backend sglang-oai-chat \\
-  --base-url \"$BASE_URL\" \\
-  --model \"$MODEL_PATH\" \\
-  --served-model-name \"$SERVED_MODEL_NAME\" \\
-  --dataset-name \"$DATASET_NAME\" \\
-  --random-input-len $input_len \\
-  --random-output-len $output_len \\
-  --random-range-ratio 1.0 \\
-  --num-prompts $num_prompts \\
-  --max-concurrency $concurrency \\
-  --seed $SEED"
       python -m sglang.bench_serving \
         --backend sglang-oai-chat \
         --base-url "$BASE_URL" \
@@ -224,24 +212,6 @@ for concurrency in "${concurrency_list[@]}"; do
         --seed "$SEED" \
         > "$log_file" 2>&1
     elif [[ "$FRAMEWORK" == "vllm" ]]; then
-      BENCH_CMD="vllm bench serve \\
-  --backend openai-chat \\
-  --endpoint /v1/chat/completions \\
-  --base-url \"$BASE_URL\" \\
-  --model \"$MODEL_PATH\" \\
-  --served-model-name \"$SERVED_MODEL_NAME\" \\
-  --dataset-name \"$DATASET_NAME\" \\
-  --random-input-len $input_len \\
-  --random-output-len $output_len \\
-  --num-prompts $num_prompts \\
-  --max-concurrency $concurrency \\
-  --trust-remote-code \\
-  --temperature 0.7 \\
-  --random-range-ratio 0.0 \\
-  --random-prefix-len 0 \\
-  --seed $SEED \\
-  --metric_percentiles 95,99 \\
-  --ready-check-timeout-sec 30"
       vllm bench serve \
         --backend openai-chat \
         --endpoint /v1/chat/completions \
@@ -263,12 +233,6 @@ for concurrency in "${concurrency_list[@]}"; do
         > "$log_file" 2>&1
     fi
 
-    # --- 累积 bench 工具命令用于报告 ---
-    BENCH_COMMANDS="${BENCH_COMMANDS}# Input=$input_len Output=$output_len Concurrency=$concurrency
-${BENCH_CMD}
-
-"
-
     # 检查命令执行状态
     if [ $? -ne 0 ]; then
       echo "!!! Error occurred. Check log file: $log_file"
@@ -286,13 +250,73 @@ done
 
 echo ""
 echo "=== All benchmark runs finished ==="
-echo "=== Check results in: $REPORT_DIR/${safe_model_name} ==="
+echo "=== Check results in: $RUN_DIR ==="
+
+# --- 构建 BENCH_COMMANDS（循环模板，变量占位，用于报告第三部分） ---
+CONC_LIST="${concurrency_list[*]}"
+IO_QUOTED=""
+for io in "${io_combinations[@]}"; do
+  IO_QUOTED="${IO_QUOTED}\"$io\" "
+done
+IO_QUOTED="${IO_QUOTED% }"
+
+if [[ "$FRAMEWORK" == "sglang" ]]; then
+  BENCH_COMMANDS="# 并发数列表: ${CONCURRENCY_STR}
+# IO 组合: ${IO_STR}
+for CONCURRENCY in ${CONC_LIST}; do
+  NUM_PROMPTS=\$CONCURRENCY
+  for IO in ${IO_QUOTED}; do
+    INPUT_LEN=\$(echo \"\$IO\" | awk '{print \$1}')
+    OUTPUT_LEN=\$(echo \"\$IO\" | awk '{print \$2}')
+    python -m sglang.bench_serving \\
+      --backend sglang-oai-chat \\
+      --base-url \"\$BASE_URL\" \\
+      --model \"\$MODEL_PATH\" \\
+      --served-model-name \"\$SERVED_MODEL_NAME\" \\
+      --dataset-name ${DATASET_NAME} \\
+      --random-input-len \$INPUT_LEN \\
+      --random-output-len \$OUTPUT_LEN \\
+      --random-range-ratio 1.0 \\
+      --num-prompts \$NUM_PROMPTS \\
+      --max-concurrency \$CONCURRENCY \\
+      --seed ${SEED}
+  done
+done"
+elif [[ "$FRAMEWORK" == "vllm" ]]; then
+  BENCH_COMMANDS="# 并发数列表: ${CONCURRENCY_STR}
+# IO 组合: ${IO_STR}
+for CONCURRENCY in ${CONC_LIST}; do
+  NUM_PROMPTS=\$CONCURRENCY
+  for IO in ${IO_QUOTED}; do
+    INPUT_LEN=\$(echo \"\$IO\" | awk '{print \$1}')
+    OUTPUT_LEN=\$(echo \"\$IO\" | awk '{print \$2}')
+    vllm bench serve \\
+      --backend openai-chat \\
+      --endpoint /v1/chat/completions \\
+      --base-url \"\$BASE_URL\" \\
+      --model \"\$MODEL_PATH\" \\
+      --served-model-name \"\$SERVED_MODEL_NAME\" \\
+      --dataset-name ${DATASET_NAME} \\
+      --random-input-len \$INPUT_LEN \\
+      --random-output-len \$OUTPUT_LEN \\
+      --num-prompts \$NUM_PROMPTS \\
+      --max-concurrency \$CONCURRENCY \\
+      --trust-remote-code \\
+      --temperature 0.7 \\
+      --random-range-ratio 0.0 \\
+      --random-prefix-len 0 \\
+      --seed ${SEED} \\
+      --metric_percentiles 95,99 \\
+      --ready-check-timeout-sec 30
+  done
+done"
+fi
 
 # --- 自动收集结果生成 CSV ---
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CSV_FILE="${REPORT_DIR}/${safe_model_name}/results.csv"
+CSV_FILE="${RUN_DIR}/results.csv"
 python3 "${SCRIPT_DIR}/collect_results.py" \
-  --report-dir "$REPORT_DIR/${safe_model_name}" \
+  --report-dir "$RUN_DIR" \
   --model-name "$SERVED_MODEL_NAME" \
   --framework "$FRAMEWORK" \
   --chip-type "$CHIP_TYPE" \

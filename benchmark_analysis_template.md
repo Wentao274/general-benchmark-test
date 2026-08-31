@@ -53,9 +53,9 @@ python -m sglang.launch_server \
   --served-model-name glm-5.2-fp8 \
   --host 0.0.0.0 \
   --port 8080 \
-  --context-length 131072 \
+  --context-length 202752 \
   --max-running-requests 64 \
-  --chunked-prefill-size 8192 \
+  --chunked-prefill-size 16384 \
   --mem-fraction-static 0.9 \
   --tp 8 \
   --dp 1 \

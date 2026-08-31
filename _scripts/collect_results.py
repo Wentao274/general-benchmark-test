@@ -10,13 +10,8 @@
 支持两种框架的输出格式（SGLang / vLLM），自动匹配英文和中文标签。
 
 用法:
-  python3 collect_results.py --report-dir ./sglang_reports/model_name \
-      --model-name dsv4-flash --framework sglang --chip-type H100 \
-      --out results.csv
-
-  # 自动检测目录下所有子目录
-  python3 collect_results.py --report-dir ./sglang_reports \
-      --model-name dsv4-flash --framework sglang --chip-type H100 \
+  python3 collect_results.py --report-dir ./sglang_reports/model_name/YYYYMMDD_HHMMSS \
+      --model-name glm-5.2-fp8 --framework sglang --chip-type H100 \
       --out results.csv
 """
 from __future__ import annotations
