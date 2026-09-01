@@ -13,7 +13,7 @@ set -euo pipefail
 #     --gsp-system-prompt-len $prefix_len   共享前缀长度
 #     --gsp-question-len 1                  每请求 1 个新 token
 #     --gsp-output-len $output_len           输出长度
-#   vLLM:   prefix-repetition
+#   vLLM:   prefix_repetition
 #     --prefix-repetition-num-prefixes 1    所有请求共享同一前缀
 #     --prefix-repetition-prefix-len $prefix_len  共享前缀长度
 #     --prefix-repetition-suffix-len 1      每请求 1 个新 token
@@ -203,7 +203,7 @@ echo "=== Concurrency:  ${concurrency_list[*]}"
 if [[ "$FRAMEWORK" == "sglang" ]]; then
   echo "=== Dataset:      generated-shared-prefix (GSP)"
 else
-  echo "=== Dataset:      prefix-repetition"
+  echo "=== Dataset:      prefix_repetition"
 fi
 echo "=== 前缀缓存:      ON (必须开启) ==="
 echo "=== Tester:       $TESTER"
@@ -238,7 +238,7 @@ for prefix_len in "${prefix_lens[@]}"; do
           --seed "$SEED" \
           > "$log_file" 2>&1
       elif [[ "$FRAMEWORK" == "vllm" ]]; then
-        # vLLM: prefix-repetition
+        # vLLM: prefix_repetition
         # num-prefixes=1 → 所有请求共享同一前缀
         vllm bench serve \
           --backend openai-chat \
@@ -246,7 +246,7 @@ for prefix_len in "${prefix_lens[@]}"; do
           --base-url "$BASE_URL" \
           --model "$MODEL_PATH" \
           --served-model-name "$SERVED_MODEL_NAME" \
-          --dataset-name prefix-repetition \
+          --dataset-name prefix_repetition \
           --prefix-repetition-prefix-len "$prefix_len" \
           --prefix-repetition-suffix-len 1 \
           --prefix-repetition-num-prefixes 1 \
@@ -320,7 +320,7 @@ for PREFIX_LEN in ${PREFIX_LIST}; do
         --base-url \"\$BASE_URL\" \\
         --model \"\$MODEL_PATH\" \\
         --served-model-name \"\$SERVED_MODEL_NAME\" \\
-        --dataset-name prefix-repetition \\
+        --dataset-name prefix_repetition \\
         --prefix-repetition-prefix-len \$PREFIX_LEN \\
         --prefix-repetition-suffix-len 1 \\
         --prefix-repetition-num-prefixes 1 \\

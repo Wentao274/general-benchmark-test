@@ -1036,7 +1036,7 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
   -c 1,4,8,16,32,64,128 \
   -T zhangsan
 
-# vLLM 纯 Decode（使用 prefix-repetition 数据集，保证共享前缀）
+# vLLM 纯 Decode（使用 prefix_repetition 数据集，保证共享前缀）
 ./decode_bench.sh -F vllm \
   -u http://127.0.0.1:8000 \
   -m /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
@@ -1089,16 +1089,16 @@ python -m sglang.bench_serving \
   --seed 123
 ```
 
-核心命令（vLLM — `prefix-repetition`）：
+核心命令（vLLM — `prefix_repetition`）：
 
 ```bash
-# prefix-repetition 数据集：num-prefixes=1 → 所有请求共享同一前缀
+# prefix_repetition 数据集：num-prefixes=1 → 所有请求共享同一前缀
 vllm bench serve \
   --backend openai-chat --endpoint /v1/chat/completions \
   --base-url "$BASE_URL" \
   --model "$MODEL_PATH" \
   --served-model-name "$SERVED_MODEL_NAME" \
-  --dataset-name prefix-repetition \
+  --dataset-name prefix_repetition \
   --prefix-repetition-prefix-len $prefix_len   \   # 共享前缀长度
   --prefix-repetition-suffix-len 1              \   # 每请求仅 1 个新 token
   --prefix-repetition-num-prefixes 1           \   # 1 个前缀 → 所有请求共享
@@ -1110,7 +1110,7 @@ vllm bench serve \
 
 > **数据集选择原因**：`random-ids`/`random` + `random-prefix-len` 在 SGLang 中
 > 每个请求可能生成独立随机前缀，无法保证缓存命中。`generated-shared-prefix`
-> 和 `prefix-repetition` 显式保证同组请求共享完全相同的前缀，首个请求填充缓存
+> 和 `prefix_repetition` 显式保证同组请求共享完全相同的前缀，首个请求填充缓存
 > 后后续请求全部命中，确保 prefill≈0，测到纯 decode 性能。
 
 > **bench 工具的局限**：bench_serving / vllm bench 并发发送所有请求，首个请求需
@@ -1245,7 +1245,7 @@ general-benchmark-test/
 └── _scripts/
     ├── bench.sh                                第1章 benchmark 脚本（统一，-F 指定 sglang/vllm）
     ├── prefill_bench.sh                        第2章 纯 Prefill 脚本（统一，-F 指定 sglang/vllm）
-    ├── decode_bench.sh                         第2章 纯 Decode 脚本（统一，SGLang 用 GSP / vLLM 用 prefix-repetition）
+    ├── decode_bench.sh                         第2章 纯 Decode 脚本（统一，SGLang 用 GSP / vLLM 用 prefix_repetition）
     ├── decode_http_sweep.py                    第2章 纯 Decode HTTP 精确测量（零依赖，流式 SSE）【仅供参考，实际不使用】
     ├── collect_results.py                      ★ 自动收集日志结果生成 CSV（所有脚本结束后自动调用）
     └── csv_to_md.py                            ★ 将 CSV 转换为 Markdown 测试报告（自动调用）
@@ -1257,7 +1257,7 @@ general-benchmark-test/
 |---|---|---|
 | `bench.sh` | `sglang` (bench_serving) / `vllm` (bench serve) | 统一脚本，`-F` 指定框架 |
 | `prefill_bench.sh` | `sglang` / `vllm` | output_len=1 变体，`-F` 指定框架 |
-| `decode_bench.sh` | `sglang` / `vllm` | SGLang 用 GSP / vLLM 用 prefix-repetition，`num_prompts = 2×并发` 稀释首请求 prefill |
+| `decode_bench.sh` | `sglang` / `vllm` | SGLang 用 GSP / vLLM 用 prefix_repetition，`num_prompts = 2×并发` 稀释首请求 prefill |
 | `decode_http_sweep.py` | **仅 Python 标准库** | 零第三方依赖，跨框架/跨厂商可用【仅供参考，实际测试不使用】 |
 | `collect_results.py` | **仅 Python 标准库** | 扫描日志提取指标生成 CSV，所有脚本结束后自动调用 |
 | `csv_to_md.py` | **仅 Python 标准库** | 将 CSV 转换为 Markdown 测试报告（三部分：结果表格 + 服务启动命令 + 测试命令），自动读取 `serve_command.txt`，找不到或为空则报错 |
@@ -1270,4 +1270,4 @@ general-benchmark-test/
 |---|---|---|---|---|---|
 | **第1章 Benchmark** | 默认 | 默认 | 开/关均可 | `random-ids` / `random` | = 并发数 |
 | **第2章 纯 Prefill** | `--disable-radix-cache` | `--no-enable-prefix-caching` | **关** | `random-ids` / `random` | = 并发数 |
-| **第2章 纯 Decode** | 默认（不加 `--disable-radix-cache`） | 默认（不加 `--no-enable-prefix-caching`） | **开** | `generated-shared-prefix` / `prefix-repetition` | = 2×并发数 |
+| **第2章 纯 Decode** | 默认（不加 `--disable-radix-cache`） | 默认（不加 `--no-enable-prefix-caching`） | **开** | `generated-shared-prefix` / `prefix_repetition` | = 2×并发数 |

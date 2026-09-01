@@ -124,14 +124,14 @@ vllm bench serve \
   --metric_percentiles 95,99 \
   --ready-check-timeout-sec 30
 
-# vLLM 纯Decode 命令（第2章，prefix-repetition 数据集）
+# vLLM 纯Decode 命令（第2章，prefix_repetition 数据集）
 vllm bench serve \
   --backend openai-chat \
   --endpoint /v1/chat/completions \
   --base-url "$BASE_URL" \
   --model "$MODEL_PATH" \
   --served-model-name "$SERVED_MODEL_NAME" \
-  --dataset-name prefix-repetition \
+  --dataset-name prefix_repetition \
   --prefix-repetition-prefix-len $PREFIX_LEN \
   --prefix-repetition-suffix-len 1 \
   --prefix-repetition-num-prefixes 1 \

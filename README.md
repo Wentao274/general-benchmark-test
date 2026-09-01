@@ -204,7 +204,7 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
   -c 1,4,8,16,32,64,128 \
   -T zhangsan
 
-# vLLM 纯 Decode（使用 prefix-repetition 数据集）
+# vLLM 纯 Decode（使用 prefix_repetition 数据集）
 ./_scripts/decode_bench.sh -F vllm \
   -u http://127.0.0.1:8000 \
   -m /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
@@ -292,7 +292,7 @@ python3 _scripts/csv_to_md.py \
 | **测试目标** | 端到端性能 | prefill 前向算力 | decode 迭代性能 |
 | **output_len** | 512/1024 | 1（固定） | 1024 |
 | **前缀缓存** | 开/关均可 | **关** | **开** |
-| **数据集** | `random-ids`/`random` | 同左 | `generated-shared-prefix`/`prefix-repetition` |
+| **数据集** | `random-ids`/`random` | 同左 | `generated-shared-prefix`/`prefix_repetition` |
 | **num_prompts** | = 并发数 | = 并发数 | = 2×并发数 |
 | **核心指标** | 输入/输出/总吞吐量、TTFT、TPOT | prefill 吞吐量、TTFT | decode 吞吐量、TPOT |
 
