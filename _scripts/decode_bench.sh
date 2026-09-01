@@ -26,9 +26,9 @@ set -euo pipefail
 
 # --- 默认配置 ---
 FRAMEWORK=""
-BASE_URL="${BASE_URL:-http://127.0.0.1:8080}"
-MODEL_PATH="${MODEL_PATH:-/data1/GLM-5.2-Channel-FP8-w8a8}"
-SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-glm-5.2-fp8}"
+BASE_URL=""
+MODEL_PATH=""
+SERVED_MODEL_NAME=""
 SEED=123
 SLEEP_TIME=60
 REPORT_DIR=""
@@ -55,19 +55,19 @@ Usage: $0 -F <sglang|vllm> [OPTIONS]
 
 必选参数:
   -F, --framework FRAMEWORK    推理框架类型: sglang 或 vllm
+  -u, --base-url URL            推理服务地址
+  -m, --model-path PATH         模型路径
+  -n, --served-model-name NAME  服务模型名
+  -t, --chip-type TYPE          芯片类型(用于CSV列名后缀,如H100/B200)
+  -T, --tester NAME             测试人员(用于报告目录层级和报告命名)
 
 可选参数:
-  -u, --base-url URL            推理服务地址        (default: $BASE_URL)
-  -m, --model-path PATH         模型路径            (default: $MODEL_PATH)
-  -n, --served-model-name NAME  服务模型名          (default: $SERVED_MODEL_NAME)
   -r, --report-dir DIR          报告输出目录        (default: ./{framework}_decode_reports)
   -p, --prefix-lens LIST        前缀长度列表(逗号分隔) (default: $DEFAULT_PREFIX_LENS)
   -o, --output-lens LIST        输出长度列表(逗号分隔) (default: $DEFAULT_OUTPUT_LENS)
   -c, --concurrency LIST        并发数列表(逗号分隔) (default: $DEFAULT_CONCURRENCY)
   -s, --sleep SECONDS           每次测试间隔秒数    (default: $SLEEP_TIME)
   -f, --foreground              前台执行(默认后台)
-  -t, --chip-type TYPE          芯片类型(用于CSV列名后缀,如H100/B200)
-  -T, --tester NAME            测试人员(必选,用于报告目录层级和报告命名)
   -h, --help                    显示帮助
 
 示例（默认后台执行）:
@@ -123,10 +123,17 @@ case "$FRAMEWORK" in
     ;;
 esac
 
-# --- 校验测试人员参数 ---
-if [[ -z "$TESTER" ]]; then
-  echo "ERROR: 必须指定测试人员，使用 -T/--tester 参数" >&2
-  echo ""
+# --- 校验必选参数 ---
+MISSING=""
+[[ -z "$BASE_URL" ]]          && MISSING+="  --base-url / -u\n"
+[[ -z "$MODEL_PATH" ]]        && MISSING+="  --model-path / -m\n"
+[[ -z "$SERVED_MODEL_NAME" ]] && MISSING+="  --served-model-name / -n\n"
+[[ -z "$CHIP_TYPE" ]]         && MISSING+="  --chip-type / -t\n"
+[[ -z "$TESTER" ]]            && MISSING+="  --tester / -T\n"
+if [[ -n "$MISSING" ]]; then
+  echo "ERROR: 以下必选参数未指定:" >&2
+  printf "%b" "$MISSING" >&2
+  echo "" >&2
   usage
   exit 1
 fi

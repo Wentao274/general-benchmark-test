@@ -90,9 +90,9 @@ set -euo pipefail
 
 # --- 默认配置 ---
 FRAMEWORK=""
-BASE_URL="${BASE_URL:-http://127.0.0.1:8080}"
-MODEL_PATH="${MODEL_PATH:-/data1/GLM-5.2-Channel-FP8-w8a8}"
-SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-glm-5.2-fp8}"
+BASE_URL=""
+MODEL_PATH=""
+SERVED_MODEL_NAME=""
 SEED=123
 SLEEP_TIME=60
 REPORT_DIR=""
@@ -112,25 +112,25 @@ Usage: $0 -F <sglang|vllm> [OPTIONS]
 
 必选参数:
   -F, --framework FRAMEWORK    推理框架类型: sglang 或 vllm
+  -u, --base-url URL            推理服务地址
+  -m, --model-path PATH         模型路径
+  -n, --served-model-name NAME  服务模型名
+  -t, --chip-type TYPE          芯片类型(用于CSV列名后缀,如H100/B200)
+  -T, --tester NAME            测试人员(用于报告目录层级和报告命名)
 
 可选参数:
-  -u, --base-url URL            推理服务地址        (default: $BASE_URL)
-  -m, --model-path PATH         模型路径            (default: $MODEL_PATH)
-  -n, --served-model-name NAME  服务模型名          (default: $SERVED_MODEL_NAME)
   -r, --report-dir DIR          报告输出目录        (default: ./{framework}_reports)
   -c, --concurrency LIST        并发数列表(逗号分隔) (default: $DEFAULT_CONCURRENCY)
   -i, --io-combinations LIST    IO组合(逗号分隔,每组"in out")
                                  (default: $DEFAULT_IO)
   -s, --sleep SECONDS           每次测试间隔秒数    (default: $SLEEP_TIME)
   -f, --foreground             前台执行(默认后台)
-  -t, --chip-type TYPE          芯片类型(用于CSV列名后缀,如H100/B200)
-  -T, --tester NAME            测试人员(必选,用于报告目录层级和报告命名)
   -h, --help                    显示帮助
 
 示例（默认后台执行）:
   $0 -F sglang -u http://127.0.0.1:8080 -m /data/model -n model-name -t H100 -T zhangsan
   $0 -F vllm   -u http://127.0.0.1:8000 -m /data/model -n model-name -t H100 -T zhangsan
-  $0 -F sglang -f -u http://... -m /path -n name -T zhangsan              # 前台执行
+  $0 -F sglang -f -u http://... -m /path -n name -t H100 -T zhangsan              # 前台执行
 EOF
 }
 
@@ -181,10 +181,17 @@ case "$FRAMEWORK" in
     ;;
 esac
 
-# --- 校验测试人员参数 ---
-if [[ -z "$TESTER" ]]; then
-  echo "ERROR: 必须指定测试人员，使用 -T/--tester 参数" >&2
-  echo ""
+# --- 校验必选参数 ---
+MISSING=""
+[[ -z "$BASE_URL" ]]          && MISSING+="  --base-url / -u\n"
+[[ -z "$MODEL_PATH" ]]        && MISSING+="  --model-path / -m\n"
+[[ -z "$SERVED_MODEL_NAME" ]] && MISSING+="  --served-model-name / -n\n"
+[[ -z "$CHIP_TYPE" ]]          && MISSING+="  --chip-type / -t\n"
+[[ -z "$TESTER" ]]             && MISSING+="  --tester / -T\n"
+if [[ -n "$MISSING" ]]; then
+  echo "ERROR: 以下必选参数未指定:" >&2
+  printf "%b" "$MISSING" >&2
+  echo "" >&2
   usage
   exit 1
 fi
@@ -440,11 +447,11 @@ python3 "${SCRIPT_DIR}/csv_to_md.py" \
 ```bash
 # 默认即后台执行（自动 nohup + 日志重定向）。
 # 如需前台执行（输出直接到终端），加 -f / --foreground：
-./bench.sh -F sglang -f -u http://127.0.0.1:8080 -m /data/model -n model-name -T zhangsan
-./bench.sh -F vllm   -f -u http://127.0.0.1:8000 -m /path -n name -T zhangsan
+./bench.sh -F sglang -f -u http://127.0.0.1:8080 -m /data/model -n model-name -t H100 -T zhangsan
+./bench.sh -F vllm   -f -u http://127.0.0.1:8000 -m /path -n name -t H100 -T zhangsan
 
 # 后台执行（默认）
-./bench.sh -F sglang -u http://127.0.0.1:8080 -m /data/model -n model-name -T zhangsan
+./bench.sh -F sglang -u http://127.0.0.1:8080 -m /data/model -n model-name -t H100 -T zhangsan
 # 输出示例：
 #   SGLang benchmark 已在后台启动 (PID: 12345)
 #   日志文件: ./sglang_reports/zhangsan/sglang_bench_20260827_143022.log
@@ -456,14 +463,14 @@ python3 "${SCRIPT_DIR}/csv_to_md.py" \
 ```bash
 # 自定义并发数和 IO 组合
 ./bench.sh -F sglang \
-  -u http://127.0.0.1:8080 -m /data/model -n model-name \
+  -u http://127.0.0.1:8080 -m /data/model -n model-name -t H100 \
   -c 1,8,32,128 \
   -i "2048 512,8192 1024" \
   -T zhangsan
 
 # 指定报告目录和间隔时间
 ./bench.sh -F vllm \
-  -u http://127.0.0.1:8000 -m /data/model -n model-name \
+  -u http://127.0.0.1:8000 -m /data/model -n model-name -t H100 \
   -r /mnt/results/vllm_bench \
   -s 30 -T zhangsan
 ```
@@ -473,15 +480,15 @@ python3 "${SCRIPT_DIR}/csv_to_md.py" \
 | 参数 | 简写 | 说明 | 默认值 |
 |---|---|---|---|
 | `--framework` | `-F` | **必选** 推理框架类型: `sglang` 或 `vllm` | — |
-| `--base-url` | `-u` | 推理服务地址 | `http://127.0.0.1:8080` |
-| `--model-path` | `-m` | 模型路径 | 脚本内置默认值 |
-| `--served-model-name` | `-n` | 服务模型名（取 `/` `\` 分割后最后一段，清除 `:` `\` 作为目录名） | 脚本内置默认值 |
+| `--base-url` | `-u` | **必选** 推理服务地址 | — |
+| `--model-path` | `-m` | **必选** 模型路径 | — |
+| `--served-model-name` | `-n` | **必选** 服务模型名（取 `/` `\` 分割后最后一段，清除 `:` `\` 作为目录名） | — |
 | `--report-dir` | `-r` | 报告输出目录 | `./sglang_reports` / `./vllm_reports`（按框架自动选择） |
 | `--concurrency` | `-c` | 并发数列表（逗号分隔） | `1,4,8,16,32,64,128` |
 | `--io-combinations` | `-i` | IO组合（逗号分隔，每组"in out"） | `2048 512,8192 1024,...` |
 | `--sleep` | `-s` | 每次测试间隔秒数 | `60` |
 | `--foreground` | `-f` | 前台执行（脚本默认后台执行） | — |
-| `--chip-type` | `-t` | 芯片类型（用于结果 CSV 列名后缀，如 `H100`/`B200`） | 空 |
+| `--chip-type` | `-t` | **必选** 芯片类型（用于结果 CSV 列名后缀，如 `H100`/`B200`） | — |
 | `--tester` | `-T` | **必选** 测试人员（用于报告目录层级和报告命名） | — |
 
 ### 1.6 结果解析与汇总
@@ -865,10 +872,13 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
   -n glm-5.2-fp8 -t H100 -T zhangsan
 
 # 默认后台执行，加 -f 前台
-./prefill_bench.sh -F sglang -f -u http://... -m /path -n name -T zhangsan
+./prefill_bench.sh -F sglang -f -u http://... -m /path -n name -t H100 -T zhangsan
 
 # 自定义输入长度和并发
-./prefill_bench.sh -F sglang -c 1,8,64 -i "32768 1,65536 1" -T zhangsan
+./prefill_bench.sh -F sglang \
+  -u http://127.0.0.1:8080 -m /data/model -n model-name -t H100 \
+  -c 1,8,64 -i "32768 1,65536 1" \
+  -T zhangsan
 ```
 
 **参数说明**：
@@ -876,12 +886,12 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 | 参数 | 短选项 | 必选 | 默认值 | 说明 |
 |---|---|---|---|---|
 | `--framework` | `-F` | ✅ | — | `sglang` 或 `vllm` |
-| `--base-url` | `-u` | | `http://127.0.0.1:8080` | 推理服务地址 |
-| `--model-path` | `-m` | | 内置默认 | 模型路径 |
-| `--served-model-name` | `-n` | | 内置默认 | 服务模型名 |
+| `--base-url` | `-u` | ✅ | — | 推理服务地址 |
+| `--model-path` | `-m` | ✅ | — | 模型路径 |
+| `--served-model-name` | `-n` | ✅ | — | 服务模型名 |
 | `--io-combinations` | `-i` | | `65536 1` | IO 组合（逗号分隔，每组 `"输入 输出"`） |
 | `--concurrency` | `-c` | | `1,4,8,16,32,64,128` | 并发数列表 |
-| `--chip-type` | `-t` | | — | 芯片类型（CSV 列名后缀） |
+| `--chip-type` | `-t` | ✅ | — | 芯片类型（CSV 列名后缀） |
 | `--tester` | `-T` | ✅ | — | 测试人员（用于报告目录层级和报告命名） |
 | `--sleep` | `-s` | | `60` | 每组测试间隔（秒） |
 | `--foreground` | `-f` | | 后台 | 前台执行 |
@@ -1047,10 +1057,15 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
   -T zhangsan
 
 # 默认后台执行，加 -f 前台
-./decode_bench.sh -F sglang -f -u http://... -m /path -n name -T zhangsan
+./decode_bench.sh -F sglang -f -u http://... -m /path -n name -t H100 -T zhangsan
 
 # 自定义前缀、输出和并发
-./decode_bench.sh -F sglang -p 8192,65536 -o 512 -c 1,16,128 -T zhangsan
+./decode_bench.sh -F sglang \
+  -u http://127.0.0.1:8080 \
+  -m /data1/GLM-5.2-Channel-FP8-w8a8 \
+  -n glm-5.2-fp8 -t H100 \
+  -p 8192,65536 -o 512 -c 1,16,128 \
+  -T zhangsan
 ```
 
 **参数说明**：
@@ -1058,13 +1073,13 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 | 参数 | 短选项 | 必选 | 默认值 | 说明 |
 |---|---|---|---|---|
 | `--framework` | `-F` | ✅ | — | `sglang` 或 `vllm` |
-| `--base-url` | `-u` | | `http://127.0.0.1:8080` | 推理服务地址 |
-| `--model-path` | `-m` | | 内置默认 | 模型路径 |
-| `--served-model-name` | `-n` | | 内置默认 | 服务模型名 |
+| `--base-url` | `-u` | ✅ | — | 推理服务地址 |
+| `--model-path` | `-m` | ✅ | — | 模型路径 |
+| `--served-model-name` | `-n` | ✅ | — | 服务模型名 |
 | `--prefix-lens` | `-p` | | `4096,32768,65536` | 前缀长度列表 |
 | `--output-lens` | `-o` | | `1024` | 输出长度列表 |
 | `--concurrency` | `-c` | | `1,4,8,16,32,64,128` | 并发数列表（num_prompts = 2×并发） |
-| `--chip-type` | `-t` | | — | 芯片类型（CSV 列名后缀） |
+| `--chip-type` | `-t` | ✅ | — | 芯片类型（CSV 列名后缀） |
 | `--tester` | `-T` | ✅ | — | 测试人员（用于报告目录层级和报告命名） |
 | `--sleep` | `-s` | | `60` | 每组测试间隔（秒） |
 | `--foreground` | `-f` | | 后台 | 前台执行 |
