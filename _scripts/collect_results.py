@@ -3,9 +3,9 @@
 """collect_results.py — 扫描 bench 日志目录，提取指标汇总为 CSV
 
 支持三种测试类型的日志文件名：
-  benchmark:  input_len-{IL}-output_len-{OL}-bs-{N}.log
-  prefill:    prefill_input-{IL}-bs-{N}.log              (output_len=1)
-  decode:     decode_prefix-{PL}-output-{OL}-bs-{N}.log  (input_len=1)
+  benchmark:  input_len-{IL}-output_len-{OL}-bs-{N}.log        (prefix长度=0)
+  prefill:    prefill_input-{IL}-bs-{N}.log                     (prefix长度=0, output_len=1)
+  decode:     decode_prefix-{PL}-output-{OL}-bs-{N}.log         (prefix长度=PL, input_len=1)
 
 支持两种框架的输出格式（SGLang / vLLM），自动匹配英文和中文标签。
 
@@ -33,6 +33,7 @@ def csv_columns(chip_type):
         "输入长度",
         "输出长度",
         "并发数",
+        "prefix长度",
         f"输入token吞吐量_{ct} (toks/s)",
         f"输出token吞吐量_{ct} (toks/s)",
         f"总token吞吐量_{ct} (toks/s)",
@@ -45,24 +46,24 @@ def csv_columns(chip_type):
 # ---------------------------------------------------------------- 文件名解析
 
 def parse_filename(fname):
-    """从日志文件名提取 (test_type, input_len, output_len, concurrency)。
+    """从日志文件名提取 (test_type, input_len, output_len, concurrency, prefix_len)。
 
     返回 None 表示无法识别的文件名。
     """
     # benchmark: input_len-{IL}-output_len-{OL}-bs-{N}.log
     m = re.match(r'input_len-(\d+)-output_len-(\d+)-bs-(\d+)\.log$', fname)
     if m:
-        return "benchmark", int(m.group(1)), int(m.group(2)), int(m.group(3))
+        return "benchmark", int(m.group(1)), int(m.group(2)), int(m.group(3)), 0
 
     # prefill: prefill_input-{IL}-bs-{N}.log
     m = re.match(r'prefill_input-(\d+)-bs-(\d+)\.log$', fname)
     if m:
-        return "prefill", int(m.group(1)), 1, int(m.group(2))
+        return "prefill", int(m.group(1)), 1, int(m.group(2)), 0
 
     # decode: decode_prefix-{PL}-output-{OL}-bs-{N}.log
     m = re.match(r'decode_prefix-(\d+)-output-(\d+)-bs-(\d+)\.log$', fname)
     if m:
-        return "decode", int(m.group(1)), int(m.group(2)), int(m.group(3))
+        return "decode", 1, int(m.group(2)), int(m.group(3)), int(m.group(1))
 
     return None
 
@@ -162,7 +163,7 @@ def scan_dir(report_dir, model_name, framework):
                 # 跳过非测试日志（如 sglang_bench_时间戳.log）
                 skipped += 1
                 continue
-            test_type, input_len, output_len, concurrency = parsed
+            test_type, input_len, output_len, concurrency, prefix_len = parsed
             filepath = os.path.join(root, fname)
             metrics = parse_log_content(filepath)
             rows.append({
@@ -171,6 +172,7 @@ def scan_dir(report_dir, model_name, framework):
                 "输入长度": input_len,
                 "输出长度": output_len,
                 "并发数": concurrency,
+                "prefix长度": prefix_len,
                 "输入token吞吐量": metrics["input_throughput"],
                 "输出token吞吐量": metrics["output_throughput"],
                 "总token吞吐量": metrics["total_throughput"],
@@ -210,8 +212,8 @@ def main():
         print("[WARN] 未在 %s 中找到任何测试日志" % args.report_dir, file=sys.stderr)
         sys.exit(0)
 
-    # 排序：按输入长度 → 输出长度 → 并发数
-    rows.sort(key=lambda r: (r["输入长度"], r["输出长度"], r["并发数"]))
+    # 排序：按输入长度 → 输出长度 → prefix长度 → 并发数
+    rows.sort(key=lambda r: (r["输入长度"], r["输出长度"], r["prefix长度"], r["并发数"]))
 
     outdir = os.path.dirname(os.path.abspath(args.out))
     if outdir:
@@ -228,6 +230,7 @@ def main():
                 r["输入长度"],
                 r["输出长度"],
                 r["并发数"],
+                r["prefix长度"],
                 r["输入token吞吐量"],
                 r["输出token吞吐量"],
                 r["总token吞吐量"],

@@ -43,8 +43,8 @@ def csv_to_markdown_table(csv_path: str) -> str:
     header = rows[0]
     data_rows = rows[1:]
 
-    # 前 4 列做留空合并（模型名称、推理框架、输入长度、输出长度）
-    MERGE_COLS = min(4, len(header))
+    # 前 6 列做留空合并（模型名称、推理框架、输入长度、输出长度、并发数、prefix长度）
+    MERGE_COLS = min(6, len(header))
     prev = [""] * MERGE_COLS
 
     lines = []
