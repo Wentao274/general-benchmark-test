@@ -92,7 +92,7 @@ general-benchmark-test/
 
 - 日志：`{report-dir}/{tester}/{model_name}/{TS}/input_len-{in}-output_len-{out}-bs-{concurrency}.log`
 - CSV：`{report-dir}/{tester}/{model_name}/{TS}/results.csv`
-- Markdown 报告：`{report-dir}/{tester}/{model_name}/{TS}/{tester}_{model_name}_results_report_{TS}.md`
+- Markdown 报告：`{report-dir}/{tester}/{model_name}/{TS}/{tester}_{model_name}_{chip_type}_bench_{TS}.md`
 
 ---
 
@@ -164,7 +164,7 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 
 - 日志：`{report-dir}/{tester}/{model_name}/{TS}/prefill_input-{in}-bs-{concurrency}.log`
 - CSV：`{report-dir}/{tester}/{model_name}/{TS}/prefill_results.csv`
-- Markdown 报告：`{report-dir}/{tester}/{model_name}/{TS}/{tester}_{model_name}_prefill_results_report_{TS}.md`
+- Markdown 报告：`{report-dir}/{tester}/{model_name}/{TS}/{tester}_{model_name}_{chip_type}_prefill_{TS}.md`
 
 ### 关注指标
 
@@ -251,7 +251,7 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 
 - 日志：`{report-dir}/{tester}/{model_name}/{TS}/decode_prefix-{prefix}-output-{out}-bs-{concurrency}.log`
 - CSV：`{report-dir}/{tester}/{model_name}/{TS}/decode_results.csv`
-- Markdown 报告：`{report-dir}/{tester}/{model_name}/{TS}/{tester}_{model_name}_decode_results_report_{TS}.md`
+- Markdown 报告：`{report-dir}/{tester}/{model_name}/{TS}/{tester}_{model_name}_{chip_type}_decode_{TS}.md`
 
 ### 关注指标
 
@@ -286,7 +286,7 @@ Markdown 报告分三部分：
 ```bash
 python3 _scripts/csv_to_md.py \
   --csv ./sglang_reports/zhangsan/glm-5.2-fp8/20260831_143022/results.csv \
-  --output ./sglang_reports/zhangsan/glm-5.2-fp8/20260831_143022/zhangsan_glm-5.2-fp8_results_report_20260831_143022.md \
+  --output ./sglang_reports/zhangsan/glm-5.2-fp8/20260831_143022/zhangsan_glm-5.2-fp8_H100_bench_20260831_143022.md \
   --bench-command "python -m sglang.bench_serving --backend sglang-oai-chat ..."
 ```
 

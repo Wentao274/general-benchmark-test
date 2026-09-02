@@ -82,7 +82,7 @@
 > 4. 默认后台执行（自动 nohup + 日志重定向），`-f/--foreground` 切前台
 > 5. 并发数和 IO 组合可通过 `-c` / `-i` 参数覆盖
 > 6. 测试结束后自动调用 `collect_results.py` 生成汇总 CSV，再自动调用 `csv_to_md.py` 生成 Markdown 测试报告
-> 7. 通过 `-T/--tester` 指定测试人员，报告目录增加 tester 层级（`{report-dir}/{tester}/{model_name}/{TS}/`），Markdown 报告命名为 `{tester}_{model_name}_results_report_{TS}.md`
+> 7. 通过 `-T/--tester` 指定测试人员，报告目录增加 tester 层级（`{report-dir}/{tester}/{model_name}/{TS}/`），Markdown 报告命名为 `{tester}_{model_name}_{chip_type}_bench_{TS}.md`
 
 ```bash
 #!/bin/bash
@@ -415,7 +415,7 @@ python3 "${SCRIPT_DIR}/collect_results.py" \
   --out "$CSV_FILE"
 
 # --- 自动生成 Markdown 测试报告 ---
-MD_FILE="${RUN_DIR}/${TESTER}_${safe_model_name}_results_report_${RUN_TS}.md"
+MD_FILE="${RUN_DIR}/${TESTER}_${safe_model_name}_${CHIP_TYPE}_bench_${RUN_TS}.md"
 python3 "${SCRIPT_DIR}/csv_to_md.py" \
   --csv "$CSV_FILE" \
   --output "$MD_FILE" \
@@ -542,9 +542,9 @@ Mean TPOT (ms):  9.25                         ← Mean TPOT
 所有 bench 脚本在测试结束后会**自动调用** `collect_results.py` 扫描日志目录，生成汇总 CSV，随后**自动调用** `csv_to_md.py` 将 CSV 转换为 Markdown 测试报告，无需手动操作。
 
 生成的文件位置（`{TS}` 为运行时间戳 `YYYYMMDD_HHMMSS`，避免重复执行时覆盖）：
-- **Benchmark**：`{report-dir}/{tester}/{model_name}/{TS}/input_len-{IL}-output_len-{OL}-bs-{N}.log` → `results.csv` → `{tester}_{model_name}_results_report_{TS}.md`
-- **纯 Prefill**：`{report-dir}/{tester}/{model_name}/{TS}/prefill_input-{IL}-bs-{N}.log` → `prefill_results.csv` → `{tester}_{model_name}_prefill_results_report_{TS}.md`
-- **纯 Decode**：`{report-dir}/{tester}/{model_name}/{TS}/decode_prefix-{PL}-output-{OL}-bs-{N}.log` → `decode_results.csv` → `{tester}_{model_name}_decode_results_report_{TS}.md`
+- **Benchmark**：`{report-dir}/{tester}/{model_name}/{TS}/input_len-{IL}-output_len-{OL}-bs-{N}.log` → `results.csv` → `{tester}_{model_name}_{chip_type}_bench_{TS}.md`
+- **纯 Prefill**：`{report-dir}/{tester}/{model_name}/{TS}/prefill_input-{IL}-bs-{N}.log` → `prefill_results.csv` → `{tester}_{model_name}_{chip_type}_prefill_{TS}.md`
+- **纯 Decode**：`{report-dir}/{tester}/{model_name}/{TS}/decode_prefix-{PL}-output-{OL}-bs-{N}.log` → `decode_results.csv` → `{tester}_{model_name}_{chip_type}_decode_{TS}.md`
 
 CSV 表头（`-t` 指定芯片类型后，列名带后缀）：
 
@@ -592,7 +592,7 @@ CSV 生成后，脚本会**自动调用** `csv_to_md.py` 将 CSV 转换为 Markd
 ```bash
 python3 _scripts/csv_to_md.py \
   --csv ./sglang_reports/zhangsan/glm-5.2-fp8/20260831_143022/results.csv \
-  --output ./sglang_reports/zhangsan/glm-5.2-fp8/20260831_143022/zhangsan_glm-5.2-fp8_results_report_20260831_143022.md \
+  --output ./sglang_reports/zhangsan/glm-5.2-fp8/20260831_143022/zhangsan_glm-5.2-fp8_H100_bench_20260831_143022.md \
   --bench-command "python -m sglang.bench_serving --backend sglang-oai-chat --base-url http://127.0.0.1:8080 ..."
 ```
 

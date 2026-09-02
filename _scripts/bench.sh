@@ -343,7 +343,7 @@ python3 "${SCRIPT_DIR}/collect_results.py" \
   --out "$CSV_FILE"
 
 # --- 自动生成 Markdown 测试报告 ---
-MD_FILE="${RUN_DIR}/${TESTER}_${safe_model_name}_results_report_${RUN_TS}.md"
+MD_FILE="${RUN_DIR}/${TESTER}_${safe_model_name}_${CHIP_TYPE}_bench_${RUN_TS}.md"
 python3 "${SCRIPT_DIR}/csv_to_md.py" \
   --csv "$CSV_FILE" \
   --output "$MD_FILE" \
