@@ -45,13 +45,13 @@ general-benchmark-test/
 ./_scripts/bench.sh -F sglang \
   -u http://127.0.0.1:8080 \
   -m /data1/GLM-5.2-Channel-FP8-w8a8 \
-  -n glm-5.2-fp8 -t H100 -T zhangsan
+  -n glm-5.2-fp8 -t H100 -T zhangsan -P agg
 
 # vLLM
 ./_scripts/bench.sh -F vllm \
   -u http://127.0.0.1:8000 \
   -m /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
-  -n glm-5.2-fp8 -t H100 -T zhangsan
+  -n glm-5.2-fp8 -t H100 -T zhangsan -P agg
 ```
 
 ### 自定义参数
@@ -62,12 +62,12 @@ general-benchmark-test/
   -u http://127.0.0.1:8080 -m /data/model -n model-name -t H100 \
   -c 1,8,32,128 \
   -i "2048 512,8192 1024" \
-  -T zhangsan
+  -T zhangsan -P agg
 
 # 前台执行 + 自定义报告目录
 ./_scripts/bench.sh -F vllm -f \
   -u http://127.0.0.1:8000 -m /data/model -n model-name -t H100 \
-  -r /mnt/results/vllm_bench -s 30 -T zhangsan
+  -r /mnt/results/vllm_bench -s 30 -T zhangsan -P agg
 ```
 
 ### 参数说明
@@ -82,6 +82,7 @@ general-benchmark-test/
 | `--io-combinations` | `-i` | | `2048 512,8192 1024,32768 1024,65536 1024` | IO 组合（逗号分隔，每组 `"输入 输出"`） |
 | `--chip-type` | `-t` | ✅ | — | 芯片类型（CSV 列名后缀，如 `H100`） |
 | `--tester` | `-T` | ✅ | — | 测试人员（用于报告目录层级和报告命名） |
+| `--pd` | `-P` | ✅ | — | PD部署模式: `agg`(非PD分离) 或 `disagg`(PD分离) |
 | `--report-dir` | `-r` | | `./{framework}_reports` | 报告输出目录 |
 | `--sleep` | `-s` | | `60` | 每组测试间隔（秒） |
 | `--foreground` | `-f` | | 后台 | 前台执行 |
@@ -92,7 +93,7 @@ general-benchmark-test/
 
 - 日志：`{report-dir}/{tester}/{model_name}/{TS}/input_len-{in}-output_len-{out}-bs-{concurrency}.log`
 - CSV：`{report-dir}/{tester}/{model_name}/{TS}/results.csv`
-- Markdown 报告：`{report-dir}/{tester}/{model_name}/{TS}/{tester}_{model_name}_{chip_type}_bench_{TS}.md`
+- Markdown 报告：`{report-dir}/{tester}/{model_name}/{TS}/{tester}_{model_name}_{chip_type}_{framework}_{pd}_bench_{TS}.md`
 
 ---
 
@@ -125,13 +126,13 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 ./_scripts/prefill_bench.sh -F sglang \
   -u http://127.0.0.1:8080 \
   -m /data1/GLM-5.2-Channel-FP8-w8a8 \
-  -n glm-5.2-fp8 -t H100 -T zhangsan
+  -n glm-5.2-fp8 -t H100 -T zhangsan -P agg
 
 # vLLM 纯 Prefill
 ./_scripts/prefill_bench.sh -F vllm \
   -u http://127.0.0.1:8000 \
   -m /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
-  -n glm-5.2-fp8 -t H100 -T zhangsan
+  -n glm-5.2-fp8 -t H100 -T zhangsan -P agg
 ```
 
 ### 自定义参数
@@ -141,7 +142,7 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 ./_scripts/prefill_bench.sh -F sglang \
   -u http://127.0.0.1:8080 -m /data/model -n model-name -t H100 \
   -c 1,8,64 -i "32768 1,65536 1" \
-  -T zhangsan
+  -T zhangsan -P agg
 ```
 
 ### 参数说明
@@ -156,6 +157,7 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 | `--concurrency` | `-c` | | `1,4,8,16,32,64,128` | 并发数列表 |
 | `--chip-type` | `-t` | ✅ | — | 芯片类型（CSV 列名后缀） |
 | `--tester` | `-T` | ✅ | — | 测试人员（用于报告目录层级和报告命名） |
+| `--pd` | `-P` | ✅ | — | PD部署模式: `agg`(非PD分离) 或 `disagg`(PD分离) |
 | `--report-dir` | `-r` | | `./{framework}_prefill_reports` | 报告输出目录 |
 | `--sleep` | `-s` | | `60` | 每组测试间隔（秒） |
 | `--foreground` | `-f` | | 后台 | 前台执行 |
@@ -164,7 +166,7 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 
 - 日志：`{report-dir}/{tester}/{model_name}/{TS}/prefill_input-{in}-bs-{concurrency}.log`
 - CSV：`{report-dir}/{tester}/{model_name}/{TS}/prefill_results.csv`
-- Markdown 报告：`{report-dir}/{tester}/{model_name}/{TS}/{tester}_{model_name}_{chip_type}_prefill_{TS}.md`
+- Markdown 报告：`{report-dir}/{tester}/{model_name}/{TS}/{tester}_{model_name}_{chip_type}_{framework}_{pd}_prefill_{TS}.md`
 
 ### 关注指标
 
@@ -205,7 +207,7 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
   -p 4096,32768,65536 \
   -o 1024 \
   -c 1,4,8,16,32,64,128 \
-  -T zhangsan
+  -T zhangsan -P agg
 
 # vLLM 纯 Decode（使用 prefix_repetition 数据集）
 ./_scripts/decode_bench.sh -F vllm \
@@ -215,7 +217,7 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
   -p 4096,32768,65536 \
   -o 1024 \
   -c 1,4,8,16,32,64,128 \
-  -T zhangsan
+  -T zhangsan -P agg
 ```
 
 ### 自定义参数
@@ -227,7 +229,7 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
   -m /data1/GLM-5.2-Channel-FP8-w8a8 \
   -n glm-5.2-fp8 -t H100 \
   -p 8192,65536 -o 512 -c 1,16,128 \
-  -T zhangsan
+  -T zhangsan -P agg
 ```
 
 ### 参数说明
@@ -243,6 +245,7 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 | `--concurrency` | `-c` | | `1,4,8,16,32,64,128` | 并发数列表（num_prompts = 2×并发） |
 | `--chip-type` | `-t` | ✅ | — | 芯片类型（CSV 列名后缀） |
 | `--tester` | `-T` | ✅ | — | 测试人员（用于报告目录层级和报告命名） |
+| `--pd` | `-P` | ✅ | — | PD部署模式: `agg`(非PD分离) 或 `disagg`(PD分离) |
 | `--report-dir` | `-r` | | `./{framework}_decode_reports` | 报告输出目录 |
 | `--sleep` | `-s` | | `60` | 每组测试间隔（秒） |
 | `--foreground` | `-f` | | 后台 | 前台执行 |
@@ -251,7 +254,7 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 
 - 日志：`{report-dir}/{tester}/{model_name}/{TS}/decode_prefix-{prefix}-output-{out}-bs-{concurrency}.log`
 - CSV：`{report-dir}/{tester}/{model_name}/{TS}/decode_results.csv`
-- Markdown 报告：`{report-dir}/{tester}/{model_name}/{TS}/{tester}_{model_name}_{chip_type}_decode_{TS}.md`
+- Markdown 报告：`{report-dir}/{tester}/{model_name}/{TS}/{tester}_{model_name}_{chip_type}_{framework}_{pd}_decode_{TS}.md`
 
 ### 关注指标
 
@@ -286,7 +289,7 @@ Markdown 报告分三部分：
 ```bash
 python3 _scripts/csv_to_md.py \
   --csv ./sglang_reports/zhangsan/glm-5.2-fp8/20260831_143022/results.csv \
-  --output ./sglang_reports/zhangsan/glm-5.2-fp8/20260831_143022/zhangsan_glm-5.2-fp8_H100_bench_20260831_143022.md \
+  --output ./sglang_reports/zhangsan/glm-5.2-fp8/20260831_143022/zhangsan_glm-5.2-fp8_H100_sglang_agg_bench_20260831_143022.md \
   --bench-command "python -m sglang.bench_serving --backend sglang-oai-chat ..."
 ```
 

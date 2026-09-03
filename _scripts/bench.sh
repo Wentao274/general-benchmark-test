@@ -27,6 +27,7 @@ SLEEP_TIME=60
 REPORT_DIR=""
 CHIP_TYPE=""
 TESTER=""
+PD=""
 BACKGROUND=true
 
 # 并发数列表（同时也是 num-prompts 的值）
@@ -46,6 +47,7 @@ Usage: $0 -F <sglang|vllm> [OPTIONS]
   -n, --served-model-name NAME  服务模型名
   -t, --chip-type TYPE          芯片类型(用于CSV列名后缀,如H100/B200)
   -T, --tester NAME             测试人员(用于报告目录层级和报告命名)
+  -P, --pd MODE                 PD部署模式: agg(非PD分离) 或 disagg(PD分离)
 
 可选参数:
   -r, --report-dir DIR          报告输出目录        (default: ./{framework}_reports)
@@ -57,9 +59,9 @@ Usage: $0 -F <sglang|vllm> [OPTIONS]
   -h, --help                    显示帮助
 
 示例（默认后台执行）:
-  $0 -F sglang -u http://127.0.0.1:8080 -m /data/model -n model-name -t H100 -T zhangsan
-  $0 -F vllm   -u http://127.0.0.1:8000 -m /data/model -n model-name -t H100 -T zhangsan
-  $0 -F sglang -f -u http://... -m /path -n name -T zhangsan              # 前台执行
+  $0 -F sglang -u http://127.0.0.1:8080 -m /data/model -n model-name -t H100 -T zhangsan -P agg
+  $0 -F vllm   -u http://127.0.0.1:8000 -m /data/model -n model-name -t H100 -T zhangsan -P disagg
+  $0 -F sglang -f -u http://... -m /path -n name -T zhangsan -P agg              # 前台执行
 EOF
 }
 
@@ -76,6 +78,7 @@ while [[ $# -gt 0 ]]; do
     -f|--foreground)          BACKGROUND=false;          shift   ;;
     -t|--chip-type)           CHIP_TYPE="$2";            shift 2 ;;
     -T|--tester)              TESTER="$2";               shift 2 ;;
+    -P|--pd)                  PD="$2";                   shift 2 ;;
     -h|--help)                usage; exit 0             ;;
     *) echo "Unknown option: $1" >&2; usage; exit 1    ;;
   esac
@@ -117,6 +120,7 @@ MISSING=""
 [[ -z "$SERVED_MODEL_NAME" ]] && MISSING+="  --served-model-name / -n\n"
 [[ -z "$CHIP_TYPE" ]]         && MISSING+="  --chip-type / -t\n"
 [[ -z "$TESTER" ]]            && MISSING+="  --tester / -T\n"
+[[ -z "$PD" ]]                 && MISSING+="  --pd / -P\n"
 if [[ -n "$MISSING" ]]; then
   echo "ERROR: 以下必选参数未指定:" >&2
   printf "%b" "$MISSING" >&2
@@ -124,6 +128,15 @@ if [[ -n "$MISSING" ]]; then
   usage
   exit 1
 fi
+
+# --- 校验 PD 参数 ---
+case "$PD" in
+  agg|disagg) ;;
+  *)
+    echo "ERROR: --pd 只支持 agg(非PD分离) 或 disagg(PD分离)，当前值: '$PD'" >&2
+    exit 1
+    ;;
+esac
 
 # --- 前置校验：serve_command.txt ---
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -155,6 +168,7 @@ if [[ "$BACKGROUND" == "true" ]]; then
     --sleep "$SLEEP_TIME" \
     --chip-type "$CHIP_TYPE" \
     --tester "$TESTER" \
+    --pd "$PD" \
     --foreground \
     > "$LOG_FILE" 2>&1 &
   PID=$!
@@ -194,6 +208,7 @@ echo "=== Concurrency:  ${concurrency_list[*]}"
 echo "=== IO Combos:     ${io_combinations[*]}"
 echo "=== Chip Type:    ${CHIP_TYPE:-(未指定)}"
 echo "=== Tester:       $TESTER"
+echo "=== PD Mode:      $PD"
 echo "=========================================="
 
 # 外层循环：遍历不同的并发值
@@ -343,7 +358,7 @@ python3 "${SCRIPT_DIR}/collect_results.py" \
   --out "$CSV_FILE"
 
 # --- 自动生成 Markdown 测试报告 ---
-MD_FILE="${RUN_DIR}/${TESTER}_${safe_model_name}_${CHIP_TYPE}_bench_${RUN_TS}.md"
+MD_FILE="${RUN_DIR}/${TESTER}_${safe_model_name}_${CHIP_TYPE}_${FRAMEWORK}_${PD}_bench_${RUN_TS}.md"
 python3 "${SCRIPT_DIR}/csv_to_md.py" \
   --csv "$CSV_FILE" \
   --output "$MD_FILE" \
