@@ -221,5 +221,5 @@ __marimo__/
 *_reports/
 results/
 
-# User-local serve command (copy from serve_command_template.txt)
-serve_command.txt
+# User-local serve command (copy from serve_command.sh.template)
+serve_command.sh

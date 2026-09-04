@@ -8,7 +8,7 @@
 general-benchmark-test/
 ├── Model_Inference_Benchmark_TestStrategy.md   完整测试方案文档
 ├── benchmark_analysis_template.md              Markdown 报告模板
-├── serve_command_template.txt                   模型服务启动命令模板（需复制为 serve_command.txt）
+├── serve_command.sh.template                   模型服务启动命令模板（需复制为 serve_command.sh）
 └── _scripts/
     ├── bench.sh                                基础 Benchmark 脚本
     ├── prefill_bench.sh                        纯 Prefill 测试脚本
@@ -21,11 +21,11 @@ general-benchmark-test/
 ## 前置条件
 
 1. 推理服务已启动并可访问
-2. 复制 `serve_command_template.txt` 为 `serve_command.txt`，填写真实的模型服务启动命令
+2. 复制 `serve_command.sh.template` 为 `serve_command.sh`，填写真实的模型服务启动命令
    ```bash
-   cp serve_command_template.txt serve_command.txt
+   cp serve_command.sh.template serve_command.sh
    ```
-   > 每个测试脚本在执行前会校验 `serve_command.txt`：文件不存在或内容为空都会报错中止
+   > 每个测试脚本在执行前会校验 `serve_command.sh`：文件不存在或内容为空都会报错中止
 3. 所有脚本默认后台执行，加 `-f` 切前台
 
 ---
@@ -91,7 +91,7 @@ general-benchmark-test/
 
 每次测试单独创建带时间戳的子目录 `{TS}`（`YYYYMMDD_HHMMSS`），重复执行不会覆盖：
 
-- 日志：`{report-dir}/{tester}/{model_name}/{TS}/input_len-{in}-output_len-{out}-bs-{concurrency}.log`
+- 日志：`{report-dir}/{tester}/{model_name}/{TS}/bench_bs-{concurrency}_input_len-{in}-output_len-{out}.log`
 - CSV：`{report-dir}/{tester}/{model_name}/{TS}/results.csv`
 - Markdown 报告：`{report-dir}/{tester}/{model_name}/{TS}/{tester}_{model_name}_{chip_type}_{framework}_{pd}_bench_{TS}.md`
 
@@ -164,7 +164,7 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 
 ### 产物
 
-- 日志：`{report-dir}/{tester}/{model_name}/{TS}/prefill_input-{in}-bs-{concurrency}.log`
+- 日志：`{report-dir}/{tester}/{model_name}/{TS}/prefill_bs-{concurrency}_input-{in}.log`
 - CSV：`{report-dir}/{tester}/{model_name}/{TS}/prefill_results.csv`
 - Markdown 报告：`{report-dir}/{tester}/{model_name}/{TS}/{tester}_{model_name}_{chip_type}_{framework}_{pd}_prefill_{TS}.md`
 
@@ -252,7 +252,7 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 
 ### 产物
 
-- 日志：`{report-dir}/{tester}/{model_name}/{TS}/decode_prefix-{prefix}-output-{out}-bs-{concurrency}.log`
+- 日志：`{report-dir}/{tester}/{model_name}/{TS}/decode_bs-{concurrency}_prefix-{prefix}-output-{out}.log`
 - CSV：`{report-dir}/{tester}/{model_name}/{TS}/decode_results.csv`
 - Markdown 报告：`{report-dir}/{tester}/{model_name}/{TS}/{tester}_{model_name}_{chip_type}_{framework}_{pd}_decode_{TS}.md`
 
@@ -279,7 +279,7 @@ Markdown 报告分三部分：
 | 部分 | 内容来源 |
 |---|---|
 | 一、测试结果 | CSV 自动转换（前 4 列相同值留空合并） |
-| 二、模型服务启动命令 | 项目根目录 `serve_command.txt`（从模板复制） |
+| 二、模型服务启动命令 | 项目根目录 `serve_command.sh`（从模板复制） |
 | 三、Benchmark 测试命令 | 脚本自动记录实际执行的 bench 工具命令 |
 
 ### 手动生成报告

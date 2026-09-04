@@ -151,18 +151,18 @@ case "$PD" in
     ;;
 esac
 
-# --- 前置校验：serve_command.txt ---
+# --- 前置校验：serve_command.sh ---
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-SERVE_CMD_FILE="${PROJECT_ROOT}/serve_command.txt"
+SERVE_CMD_FILE="${PROJECT_ROOT}/serve_command.sh"
 if [[ ! -f "$SERVE_CMD_FILE" ]]; then
-  echo "ERROR: 找不到 serve_command.txt，请先复制模板并填写模型服务启动命令：" >&2
-  echo "  cp serve_command_template.txt serve_command.txt" >&2
-  echo "  # 然后编辑 serve_command.txt 填写真实部署命令" >&2
+  echo "ERROR: 找不到 serve_command.sh，请先复制模板并填写模型服务启动命令：" >&2
+  echo "  cp serve_command.sh.template serve_command.sh" >&2
+  echo "  # 然后编辑 serve_command.sh 填写真实部署命令" >&2
   exit 1
 fi
 if [[ ! -s "$SERVE_CMD_FILE" ]]; then
-  echo "ERROR: serve_command.txt 文件为空，请填写真实的模型服务启动命令。" >&2
+  echo "ERROR: serve_command.sh 文件为空，请填写真实的模型服务启动命令。" >&2
   exit 1
 fi
 
@@ -236,7 +236,7 @@ for prefix_len in "${prefix_lens[@]}"; do
     for concurrency in "${concurrency_list[@]}"; do
       # num_prompts = 2 × 并发数，稀释首个请求的 prefill 开销
       num_prompts=$((concurrency * 2))
-      log_file="${RUN_DIR}/decode_prefix-${prefix_len}-output-${output_len}-bs-${concurrency}.log"
+      log_file="${RUN_DIR}/decode_bs-${concurrency}_prefix-${prefix_len}-output-${output_len}.log"
       echo ""
       echo ">>> Decode: Prefix=$prefix_len, Output=$output_len, Concurrency=$concurrency, NumPrompts=$num_prompts"
       echo ">>> Log file: $log_file"

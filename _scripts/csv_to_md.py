@@ -4,20 +4,20 @@
 
 报告分三部分：
   1. 测试结果表格（从 CSV 转换）
-  2. 模型服务启动命令（从 serve_command.txt 读取）
+  2. 模型服务启动命令（从 serve_command.sh 读取）
   3. Benchmark 测试命令（从 --bench-command 参数传入）
 
-使用前需复制 serve_command_template.txt 为 serve_command.txt 并填写真实部署命令。
+使用前需复制 serve_command.sh.template 为 serve_command.sh 并填写真实部署命令。
 
 用法:
   python3 csv_to_md.py \
       --csv results.csv \
       --output report.md \
       --bench-command "bench.sh -F sglang -u http://... -m /path -n name -t H100" \
-      --serve-command-file serve_command.txt
+      --serve-command-file serve_command.sh
 
   如果不指定 --output，则输出到 CSV 同目录下的 {csv_basename}_report.md
-  如果不指定 --serve-command-file，则默认使用脚本同目录下的 ../serve_command.txt
+  如果不指定 --serve-command-file，则默认使用脚本同目录下的 ../serve_command.sh
 """
 from __future__ import annotations
 
@@ -64,10 +64,10 @@ def csv_to_markdown_table(csv_path: str) -> str:
 
 
 def read_serve_command(serve_cmd_path: str) -> str:
-    """读取 serve_command.txt 文件内容。"""
+    """读取 serve_command.sh 文件内容。"""
     if not os.path.isfile(serve_cmd_path):
         print("[ERROR] 找不到模型服务启动命令文件: %s" % serve_cmd_path, file=sys.stderr)
-        print("        请复制 serve_command_template.txt 为 serve_command.txt，"
+        print("        请复制 serve_command.sh.template 为 serve_command.sh，"
               "并填写真实的模型服务启动命令。", file=sys.stderr)
         sys.exit(1)
 
@@ -75,7 +75,7 @@ def read_serve_command(serve_cmd_path: str) -> str:
         content = f.read().strip()
 
     if not content:
-        print("[ERROR] serve_command.txt 文件为空，请填写模型服务启动命令: %s"
+        print("[ERROR] serve_command.sh 文件为空，请填写模型服务启动命令: %s"
               % serve_cmd_path, file=sys.stderr)
         sys.exit(1)
 
@@ -114,7 +114,7 @@ def generate_report(csv_path: str, serve_cmd_path: str,
 
     # 第二部分
     report.append("## 二、模型服务启动命令\n")
-    report.append("> 以下内容自动从 `serve_command.txt` 读取。\n")
+    report.append("> 以下内容自动从 `serve_command.sh` 读取。\n")
     report.append("<!-- SERVE_COMMAND_START -->")
     report.append(serve_content)
     report.append("<!-- SERVE_COMMAND_END -->\n")
@@ -149,7 +149,7 @@ def main():
     ap.add_argument("--bench-command", required=True,
                     help="实际执行的 benchmark 测试命令")
     ap.add_argument("--serve-command-file", default="",
-                    help="模型服务启动命令文件路径（默认: 脚本上级目录的 serve_command.txt）")
+                    help="模型服务启动命令文件路径（默认: 脚本上级目录的 serve_command.sh）")
 
     args = ap.parse_args()
 
@@ -157,12 +157,12 @@ def main():
         print("[ERROR] CSV 文件不存在: %s" % args.csv, file=sys.stderr)
         sys.exit(1)
 
-    # 确定 serve_command.txt 路径
+    # 确定 serve_command.sh 路径
     serve_cmd_path = args.serve_command_file
     if not serve_cmd_path:
         script_dir = os.path.dirname(os.path.abspath(__file__))
         # 默认在 _scripts/ 的上级目录（项目根目录）查找
-        serve_cmd_path = os.path.join(os.path.dirname(script_dir), "serve_command.txt")
+        serve_cmd_path = os.path.join(os.path.dirname(script_dir), "serve_command.sh")
 
     # 确定输出路径
     output_path = args.output

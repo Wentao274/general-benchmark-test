@@ -3,9 +3,9 @@
 """collect_results.py — 扫描 bench 日志目录，提取指标汇总为 CSV
 
 支持三种测试类型的日志文件名：
-  benchmark:  input_len-{IL}-output_len-{OL}-bs-{N}.log        (prefix长度=0)
-  prefill:    prefill_input-{IL}-bs-{N}.log                     (prefix长度=0, output_len=1)
-  decode:     decode_prefix-{PL}-output-{OL}-bs-{N}.log         (prefix长度=PL, input_len=1)
+  benchmark:  bench_bs-{N}_input_len-{IL}-output_len-{OL}.log        (prefix长度=0)
+  prefill:    prefill_bs-{N}_input-{IL}.log                          (prefix长度=0, output_len=1)
+  decode:     decode_bs-{N}_prefix-{PL}-output-{OL}.log              (prefix长度=PL, input_len=1)
 
 支持两种框架的输出格式（SGLang / vLLM），自动匹配英文和中文标签。
 
@@ -50,20 +50,20 @@ def parse_filename(fname):
 
     返回 None 表示无法识别的文件名。
     """
-    # benchmark: input_len-{IL}-output_len-{OL}-bs-{N}.log
-    m = re.match(r'input_len-(\d+)-output_len-(\d+)-bs-(\d+)\.log$', fname)
+    # benchmark: bench_bs-{N}_input_len-{IL}-output_len-{OL}.log
+    m = re.match(r'bench_bs-(\d+)_input_len-(\d+)-output_len-(\d+)\.log$', fname)
     if m:
-        return "benchmark", int(m.group(1)), int(m.group(2)), int(m.group(3)), 0
+        return "benchmark", int(m.group(2)), int(m.group(3)), int(m.group(1)), 0
 
-    # prefill: prefill_input-{IL}-bs-{N}.log
-    m = re.match(r'prefill_input-(\d+)-bs-(\d+)\.log$', fname)
+    # prefill: prefill_bs-{N}_input-{IL}.log
+    m = re.match(r'prefill_bs-(\d+)_input-(\d+)\.log$', fname)
     if m:
-        return "prefill", int(m.group(1)), 1, int(m.group(2)), 0
+        return "prefill", int(m.group(2)), 1, int(m.group(1)), 0
 
-    # decode: decode_prefix-{PL}-output-{OL}-bs-{N}.log
-    m = re.match(r'decode_prefix-(\d+)-output-(\d+)-bs-(\d+)\.log$', fname)
+    # decode: decode_bs-{N}_prefix-{PL}-output-{OL}.log
+    m = re.match(r'decode_bs-(\d+)_prefix-(\d+)-output-(\d+)\.log$', fname)
     if m:
-        return "decode", 1, int(m.group(2)), int(m.group(3)), int(m.group(1))
+        return "decode", 1, int(m.group(3)), int(m.group(1)), int(m.group(2))
 
     return None
 

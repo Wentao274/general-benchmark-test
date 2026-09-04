@@ -43,7 +43,7 @@
 
 ## 二、模型服务启动命令
 
-> 以下内容自动从 `serve_command.txt` 读取（从 `serve_command_template.txt` 复制并填写）。
+> 以下内容自动从 `serve_command.sh` 读取（从 `serve_command.sh.template` 复制并填写）。
 
 <!-- SERVE_COMMAND_START -->
 ```bash

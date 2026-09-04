@@ -209,18 +209,18 @@ case "$PD" in
     ;;
 esac
 
-# --- 前置校验：serve_command.txt ---
+# --- 前置校验：serve_command.sh ---
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-SERVE_CMD_FILE="${PROJECT_ROOT}/serve_command.txt"
+SERVE_CMD_FILE="${PROJECT_ROOT}/serve_command.sh"
 if [[ ! -f "$SERVE_CMD_FILE" ]]; then
-  echo "ERROR: 找不到 serve_command.txt，请先复制模板并填写模型服务启动命令：" >&2
-  echo "  cp serve_command_template.txt serve_command.txt" >&2
-  echo "  # 然后编辑 serve_command.txt 填写真实部署命令" >&2
+  echo "ERROR: 找不到 serve_command.sh，请先复制模板并填写模型服务启动命令：" >&2
+  echo "  cp serve_command.sh.template serve_command.sh" >&2
+  echo "  # 然后编辑 serve_command.sh 填写真实部署命令" >&2
   exit 1
 fi
 if [[ ! -s "$SERVE_CMD_FILE" ]]; then
-  echo "ERROR: serve_command.txt 文件为空，请填写真实的模型服务启动命令。" >&2
+  echo "ERROR: serve_command.sh 文件为空，请填写真实的模型服务启动命令。" >&2
   exit 1
 fi
 
@@ -297,7 +297,7 @@ for concurrency in "${concurrency_list[@]}"; do
     output_len=$(echo "$combo" | awk '{print $2}')
 
     # 构建日志文件路径
-    log_file="${RUN_DIR}/input_len-${input_len}-output_len-${output_len}-bs-${num_prompts}.log"
+    log_file="${RUN_DIR}/bench_bs-${num_prompts}_input_len-${input_len}-output_len-${output_len}.log"
 
     echo ""
     echo ">>> Running test: Input=$input_len, Output=$output_len, Concurrency=$concurrency"
@@ -558,9 +558,9 @@ Mean TPOT (ms):  9.25                         ← Mean TPOT
 所有 bench 脚本在测试结束后会**自动调用** `collect_results.py` 扫描日志目录，生成汇总 CSV，随后**自动调用** `csv_to_md.py` 将 CSV 转换为 Markdown 测试报告，无需手动操作。
 
 生成的文件位置（`{TS}` 为运行时间戳 `YYYYMMDD_HHMMSS`，避免重复执行时覆盖）：
-- **Benchmark**：`{report-dir}/{tester}/{model_name}/{TS}/input_len-{IL}-output_len-{OL}-bs-{N}.log` → `results.csv` → `{tester}_{model_name}_{chip_type}_{framework}_{pd}_bench_{TS}.md`
-- **纯 Prefill**：`{report-dir}/{tester}/{model_name}/{TS}/prefill_input-{IL}-bs-{N}.log` → `prefill_results.csv` → `{tester}_{model_name}_{chip_type}_{framework}_{pd}_prefill_{TS}.md`
-- **纯 Decode**：`{report-dir}/{tester}/{model_name}/{TS}/decode_prefix-{PL}-output-{OL}-bs-{N}.log` → `decode_results.csv` → `{tester}_{model_name}_{chip_type}_{framework}_{pd}_decode_{TS}.md`
+- **Benchmark**：`{report-dir}/{tester}/{model_name}/{TS}/bench_bs-{N}_input_len-{IL}-output_len-{OL}.log` → `results.csv` → `{tester}_{model_name}_{chip_type}_{framework}_{pd}_bench_{TS}.md`
+- **纯 Prefill**：`{report-dir}/{tester}/{model_name}/{TS}/prefill_bs-{N}_input-{IL}.log` → `prefill_results.csv` → `{tester}_{model_name}_{chip_type}_{framework}_{pd}_prefill_{TS}.md`
+- **纯 Decode**：`{report-dir}/{tester}/{model_name}/{TS}/decode_bs-{N}_prefix-{PL}-output-{OL}.log` → `decode_results.csv` → `{tester}_{model_name}_{chip_type}_{framework}_{pd}_decode_{TS}.md`
 
 CSV 表头（`-t` 指定芯片类型后，列名带后缀）：
 
@@ -597,10 +597,10 @@ CSV 生成后，脚本会**自动调用** `csv_to_md.py` 将 CSV 转换为 Markd
 | 部分 | 内容来源 | 说明 |
 |---|---|---|
 | **一、测试结果** | CSV 文件自动转换 | 将 CSV 数据转为 Markdown 表格 |
-| **二、模型服务启动命令** | `serve_command.txt` 文件 | 需从 `serve_command_template.txt` 复制并填写真实命令；找不到则报错 |
+| **二、模型服务启动命令** | `serve_command.sh` 文件 | 需从 `serve_command.sh.template` 复制并填写真实命令；找不到则报错 |
 | **三、Benchmark 测试命令** | 脚本自动生成 | 以循环语句形式合并所有参数组合，变量用占位符表示（如 `$CONCURRENCY`、`$INPUT_LEN`），而非逐条列出 |
 
-> **`serve_command.txt`**：需从 `serve_command_template.txt` 复制并填写真实模型服务启动命令（如 `python -m sglang.launch_server ...`）。
+> **`serve_command.sh`**：需从 `serve_command.sh.template` 复制并填写真实模型服务启动命令（如 `python -m sglang.launch_server ...`）。
 > `csv_to_md.py` 会自动读取其内容填入报告第二部分。模板见 `benchmark_analysis_template.md`。
 
 也可以**手动执行**生成报告：
@@ -1274,7 +1274,7 @@ general-benchmark-test/
 ├── Model_Inference_Benchmark_TestStrategy.md   本文档
 ├── README.md                                   快速参考指南（三种测试对比、执行命令、参数说明）
 ├── benchmark_analysis_template.md              Markdown 报告模板
-├── serve_command_template.txt                  模型服务启动命令模板（需复制为 serve_command.txt 填写真实命令）
+├── serve_command.sh.template                  模型服务启动命令模板（需复制为 serve_command.sh 填写真实命令）
 └── _scripts/
     ├── bench.sh                                第1章 benchmark 脚本（统一，-F 指定 sglang/vllm）
     ├── prefill_bench.sh                        第2章 纯 Prefill 脚本（统一，-F 指定 sglang/vllm）
@@ -1293,8 +1293,8 @@ general-benchmark-test/
 | `decode_bench.sh` | `sglang` / `vllm` | SGLang 用 GSP / vLLM 用 prefix_repetition，`num_prompts = 2×并发` 稀释首请求 prefill |
 | `decode_http_sweep.py` | **仅 Python 标准库** | 零第三方依赖，跨框架/跨厂商可用【仅供参考，实际测试不使用】 |
 | `collect_results.py` | **仅 Python 标准库** | 扫描日志提取指标生成 CSV，所有脚本结束后自动调用 |
-| `csv_to_md.py` | **仅 Python 标准库** | 将 CSV 转换为 Markdown 测试报告（三部分：结果表格 + 服务启动命令 + 测试命令），自动读取 `serve_command.txt`，找不到或为空则报错 |
-| `serve_command_template.txt` | — | 模板文件，执行者复制为 `serve_command.txt` 并填写真实模型服务启动命令 |
+| `csv_to_md.py` | **仅 Python 标准库** | 将 CSV 转换为 Markdown 测试报告（三部分：结果表格 + 服务启动命令 + 测试命令），自动读取 `serve_command.sh`，找不到或为空则报错 |
+| `serve_command.sh.template` | — | 模板文件，执行者复制为 `serve_command.sh` 并填写真实模型服务启动命令 |
 | `benchmark_analysis_template.md` | — | Markdown 报告模板，包含三部分示例（结果表格 / 服务启动命令 / 测试命令） |
 
 ### 快速参考：服务端配置对照

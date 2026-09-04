@@ -138,18 +138,18 @@ case "$PD" in
     ;;
 esac
 
-# --- 前置校验：serve_command.txt ---
+# --- 前置校验：serve_command.sh ---
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-SERVE_CMD_FILE="${PROJECT_ROOT}/serve_command.txt"
+SERVE_CMD_FILE="${PROJECT_ROOT}/serve_command.sh"
 if [[ ! -f "$SERVE_CMD_FILE" ]]; then
-  echo "ERROR: 找不到 serve_command.txt，请先复制模板并填写模型服务启动命令：" >&2
-  echo "  cp serve_command_template.txt serve_command.txt" >&2
-  echo "  # 然后编辑 serve_command.txt 填写真实部署命令" >&2
+  echo "ERROR: 找不到 serve_command.sh，请先复制模板并填写模型服务启动命令：" >&2
+  echo "  cp serve_command.sh.template serve_command.sh" >&2
+  echo "  # 然后编辑 serve_command.sh 填写真实部署命令" >&2
   exit 1
 fi
 if [[ ! -s "$SERVE_CMD_FILE" ]]; then
-  echo "ERROR: serve_command.txt 文件为空，请填写真实的模型服务启动命令。" >&2
+  echo "ERROR: serve_command.sh 文件为空，请填写真实的模型服务启动命令。" >&2
   exit 1
 fi
 
@@ -225,7 +225,7 @@ for concurrency in "${concurrency_list[@]}"; do
     output_len=$(echo "$combo" | awk '{print $2}')
 
     # 构建日志文件路径
-    log_file="${RUN_DIR}/input_len-${input_len}-output_len-${output_len}-bs-${num_prompts}.log"
+    log_file="${RUN_DIR}/bench_bs-${num_prompts}_input_len-${input_len}-output_len-${output_len}.log"
 
     echo ""
     echo ">>> Running test: Input=$input_len, Output=$output_len, Concurrency=$concurrency"
