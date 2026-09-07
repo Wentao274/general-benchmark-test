@@ -209,6 +209,7 @@ for concurrency in "${concurrency_list[@]}"; do
     input_len=$(echo "$combo" | awk '{print $1}')
     output_len=$(echo "$combo" | awk '{print $2}')
     log_file="${RUN_DIR}/prefill_bs-${num_prompts}_input-${input_len}.log"
+    jsonl_file="${RUN_DIR}/prefill_bs-${num_prompts}_input-${input_len}.jsonl"
     echo ""
     echo ">>> Prefill: Input=$input_len, Output=$output_len, Concurrency=$concurrency"
     echo ">>> Log file: $log_file"
@@ -226,6 +227,7 @@ for concurrency in "${concurrency_list[@]}"; do
         --num-prompts "$num_prompts" \
         --max-concurrency "$concurrency" \
         --seed "$SEED" \
+        --output-file "$jsonl_file" \
         > "$log_file" 2>&1
     elif [[ "$FRAMEWORK" == "vllm" ]]; then
       vllm bench serve \

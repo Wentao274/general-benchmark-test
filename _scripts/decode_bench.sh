@@ -237,6 +237,7 @@ for prefix_len in "${prefix_lens[@]}"; do
       # num_prompts = 2 × 并发数，稀释首个请求的 prefill 开销
       num_prompts=$((concurrency * 2))
       log_file="${RUN_DIR}/decode_bs-${concurrency}_prefix-${prefix_len}-output-${output_len}.log"
+      jsonl_file="${RUN_DIR}/decode_bs-${concurrency}_prefix-${prefix_len}-output-${output_len}.jsonl"
       echo ""
       echo ">>> Decode: Prefix=$prefix_len, Output=$output_len, Concurrency=$concurrency, NumPrompts=$num_prompts"
       echo ">>> Log file: $log_file"
@@ -258,6 +259,7 @@ for prefix_len in "${prefix_lens[@]}"; do
           --num-prompts "$num_prompts" \
           --max-concurrency "$concurrency" \
           --seed "$SEED" \
+          --output-file "$jsonl_file" \
           > "$log_file" 2>&1
       elif [[ "$FRAMEWORK" == "vllm" ]]; then
         # vLLM: prefix_repetition

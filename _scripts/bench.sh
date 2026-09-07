@@ -226,6 +226,7 @@ for concurrency in "${concurrency_list[@]}"; do
 
     # 构建日志文件路径
     log_file="${RUN_DIR}/bench_bs-${num_prompts}_input_len-${input_len}-output_len-${output_len}.log"
+    jsonl_file="${RUN_DIR}/bench_bs-${num_prompts}_input_len-${input_len}-output_len-${output_len}.jsonl"
 
     echo ""
     echo ">>> Running test: Input=$input_len, Output=$output_len, Concurrency=$concurrency"
@@ -245,6 +246,7 @@ for concurrency in "${concurrency_list[@]}"; do
         --num-prompts "$num_prompts" \
         --max-concurrency "$concurrency" \
         --seed "$SEED" \
+        --output-file "$jsonl_file" \
         > "$log_file" 2>&1
     elif [[ "$FRAMEWORK" == "vllm" ]]; then
       vllm bench serve \
