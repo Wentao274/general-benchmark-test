@@ -290,7 +290,7 @@ Markdown 报告分三部分：
 python3 _scripts/csv_to_md.py \
   --csv ./sglang_reports/zhangsan/glm-5.2-fp8/20260831_143022/results.csv \
   --output ./sglang_reports/zhangsan/glm-5.2-fp8/20260831_143022/zhangsan_glm-5.2-fp8_H100_sglang_agg_bench_20260831_143022.md \
-  --bench-command "python -m sglang.bench_serving --backend sglang-oai-chat ..."
+  --bench-command "python -m sglang.benchmark.serving --backend sglang-oai-chat ..."
 ```
 
 ---

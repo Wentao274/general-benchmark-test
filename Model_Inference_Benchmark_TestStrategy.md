@@ -305,7 +305,7 @@ for concurrency in "${concurrency_list[@]}"; do
 
     # --- 根据框架选择对应的 bench 命令 ---
     if [[ "$FRAMEWORK" == "sglang" ]]; then
-      python -m sglang.bench_serving \
+      python -m sglang.benchmark.serving \
         --backend sglang-oai-chat \
         --base-url "$BASE_URL" \
         --model "$MODEL_PATH" \
@@ -375,7 +375,7 @@ for CONCURRENCY in ${CONC_LIST}; do
   for IO in ${IO_QUOTED}; do
     INPUT_LEN=\$(echo \"\$IO\" | awk '{print \$1}')
     OUTPUT_LEN=\$(echo \"\$IO\" | awk '{print \$2}')
-    python -m sglang.bench_serving \\
+    python -m sglang.benchmark.serving \\
       --backend sglang-oai-chat \\
       --base-url \"\$BASE_URL\" \\
       --model \"\$MODEL_PATH\" \\
@@ -511,7 +511,7 @@ python3 "${SCRIPT_DIR}/csv_to_md.py" \
 
 每个测试生成一个 `.log` 文件，包含 bench 工具的原生输出。关键指标及对应字段：
 
-#### SGLang `bench_serving` 输出示例
+#### SGLang `benchmark.serving` 输出示例
 
 ```
 ============ Serving Benchmark Result ============
@@ -609,7 +609,7 @@ CSV 生成后，脚本会**自动调用** `csv_to_md.py` 将 CSV 转换为 Markd
 python3 _scripts/csv_to_md.py \
   --csv ./sglang_reports/zhangsan/glm-5.2-fp8/20260831_143022/results.csv \
   --output ./sglang_reports/zhangsan/glm-5.2-fp8/20260831_143022/zhangsan_glm-5.2-fp8_H100_sglang_agg_bench_20260831_143022.md \
-  --bench-command "python -m sglang.bench_serving --backend sglang-oai-chat --base-url http://127.0.0.1:8080 ..."
+  --bench-command "python -m sglang.benchmark.serving --backend sglang-oai-chat --base-url http://127.0.0.1:8080 ..."
 ```
 
 ### 1.7 部署建议
@@ -917,7 +917,7 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 核心命令（SGLang）：
 
 ```bash
-python -m sglang.bench_serving \
+python -m sglang.benchmark.serving \
   --backend sglang-oai-chat \
   --base-url "$BASE_URL" \
   --model "$MODEL_PATH" \
@@ -1107,7 +1107,7 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 
 ```bash
 # GSP 数据集：所有请求共享同一前缀，保证缓存命中
-python -m sglang.bench_serving \
+python -m sglang.benchmark.serving \
   --backend sglang-oai-chat \
   --base-url "$BASE_URL" \
   --model "$MODEL_PATH" \
@@ -1146,7 +1146,7 @@ vllm bench serve \
 > 和 `prefix_repetition` 显式保证同组请求共享完全相同的前缀，首个请求填充缓存
 > 后后续请求全部命中，确保 prefill≈0，测到纯 decode 性能。
 
-> **bench 工具的局限**：bench_serving / vllm bench 并发发送所有请求，首个请求需
+> **bench 工具的局限**：benchmark.serving / vllm bench 并发发送所有请求，首个请求需
 > prefill 完整前缀才能填充缓存，后续请求才命中。已通过 `num_prompts = 2 × 并发数`
 > 稀释首个请求的 prefill 开销，但 TTFT 仍受首请求污染。若需精确测量 TTFT/TPOT，使用下方 HTTP 脚本。
 
@@ -1288,7 +1288,7 @@ general-benchmark-test/
 
 | 脚本 | 依赖 | 说明 |
 |---|---|---|
-| `bench.sh` | `sglang` (bench_serving) / `vllm` (bench serve) | 统一脚本，`-F` 指定框架 |
+| `bench.sh` | `sglang` (benchmark.serving) / `vllm` (bench serve) | 统一脚本，`-F` 指定框架 |
 | `prefill_bench.sh` | `sglang` / `vllm` | output_len=1 变体，`-F` 指定框架 |
 | `decode_bench.sh` | `sglang` / `vllm` | SGLang 用 GSP / vLLM 用 prefix_repetition，`num_prompts = 2×并发` 稀释首请求 prefill |
 | `decode_http_sweep.py` | **仅 Python 标准库** | 零第三方依赖，跨框架/跨厂商可用【仅供参考，实际测试不使用】 |

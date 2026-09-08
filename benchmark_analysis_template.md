@@ -75,7 +75,7 @@ python -m sglang.launch_server \
 <!-- BENCH_COMMAND_START -->
 ```bash
 # SGLang Benchmark 命令（第1章 / 第2章纯Prefill 通用）
-python -m sglang.bench_serving \
+python -m sglang.benchmark.serving \
   --backend sglang-oai-chat \
   --base-url "$BASE_URL" \
   --model "$MODEL_PATH" \
@@ -89,7 +89,7 @@ python -m sglang.bench_serving \
   --seed 123
 
 # SGLang 纯Decode 命令（第2章，generated-shared-prefix 数据集）
-python -m sglang.bench_serving \
+python -m sglang.benchmark.serving \
   --backend sglang-oai-chat \
   --base-url "$BASE_URL" \
   --model "$MODEL_PATH" \

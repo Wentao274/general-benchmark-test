@@ -245,7 +245,7 @@ for prefix_len in "${prefix_lens[@]}"; do
       if [[ "$FRAMEWORK" == "sglang" ]]; then
         # SGLang: generated-shared-prefix (GSP)
         # 所有请求共享同一前缀，保证缓存命中
-        python -m sglang.bench_serving \
+        python -m sglang.benchmark.serving \
           --backend sglang-oai-chat \
           --base-url "$BASE_URL" \
           --model "$MODEL_PATH" \
@@ -313,7 +313,7 @@ for PREFIX_LEN in ${PREFIX_LIST}; do
   for OUTPUT_LEN in ${OUTPUT_LIST}; do
     for CONCURRENCY in ${CONC_LIST}; do
       NUM_PROMPTS=\$((CONCURRENCY * 2))
-      python -m sglang.bench_serving \\
+      python -m sglang.benchmark.serving \\
         --backend sglang-oai-chat \\
         --base-url \"\$BASE_URL\" \\
         --model \"\$MODEL_PATH\" \\

@@ -215,7 +215,7 @@ for concurrency in "${concurrency_list[@]}"; do
     echo ">>> Log file: $log_file"
 
     if [[ "$FRAMEWORK" == "sglang" ]]; then
-      python -m sglang.bench_serving \
+      python -m sglang.benchmark.serving \
         --backend sglang-oai-chat \
         --base-url "$BASE_URL" \
         --model "$MODEL_PATH" \
@@ -282,7 +282,7 @@ for CONCURRENCY in ${CONC_LIST}; do
   for IO in ${IO_QUOTED}; do
     INPUT_LEN=\$(echo \"\$IO\" | awk '{print \$1}')
     OUTPUT_LEN=\$(echo \"\$IO\" | awk '{print \$2}')
-    python -m sglang.bench_serving \\
+    python -m sglang.benchmark.serving \\
       --backend sglang-oai-chat \\
       --base-url \"\$BASE_URL\" \\
       --model \"\$MODEL_PATH\" \\

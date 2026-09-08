@@ -5,7 +5,7 @@ set -euo pipefail
 # Benchmark 基准测试脚本（支持 SGLang / vLLM）
 #
 # 通过 -F/--framework 指定推理框架，自动选择对应的 bench 命令分支：
-#   sglang → python -m sglang.bench_serving
+#   sglang → python -m sglang.benchmark.serving
 #   vllm   → vllm bench serve
 #
 # 改进点:
@@ -234,7 +234,7 @@ for concurrency in "${concurrency_list[@]}"; do
 
     # --- 根据框架选择对应的 bench 命令 ---
     if [[ "$FRAMEWORK" == "sglang" ]]; then
-      python -m sglang.bench_serving \
+      python -m sglang.benchmark.serving \
         --backend sglang-oai-chat \
         --base-url "$BASE_URL" \
         --model "$MODEL_PATH" \
@@ -305,7 +305,7 @@ for CONCURRENCY in ${CONC_LIST}; do
   for IO in ${IO_QUOTED}; do
     INPUT_LEN=\$(echo \"\$IO\" | awk '{print \$1}')
     OUTPUT_LEN=\$(echo \"\$IO\" | awk '{print \$2}')
-    python -m sglang.bench_serving \\
+    python -m sglang.benchmark.serving \\
       --backend sglang-oai-chat \\
       --base-url \"\$BASE_URL\" \\
       --model \"\$MODEL_PATH\" \\
