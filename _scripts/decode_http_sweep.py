@@ -35,7 +35,7 @@
 用法:
     python3 decode_http_sweep.py \\
         --base-url http://127.0.0.1:30000 --model my-model \\
-        --prefix-lens 4096,32768,65536 \\
+        --prefix-lens 8192,32768,65536 \\
         --output-lens 1024 \\
         --batches 1,4,8,16,32,64,128 \\
         --vocab-size 151552 --framework sglang --tp 8 \\
@@ -419,7 +419,7 @@ def main():
     ap.add_argument("--path", default="/v1/completions")
     ap.add_argument("--api-key", default=os.environ.get("OPENAI_API_KEY", ""))
     ap.add_argument("--mode", choices=["batch", "steady"], default="batch")
-    ap.add_argument("--prefix-lens", default="4096,32768,65536",
+    ap.add_argument("--prefix-lens", default="8192,32768,65536",
                     help="共享前缀长度（模拟 KV cache 已就位）")
     ap.add_argument("--output-lens", default="1024",
                     help="decode 输出长度")

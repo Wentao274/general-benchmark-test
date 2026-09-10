@@ -37,14 +37,14 @@
 
 | 参数 | 值 | 说明 |
 |---|---|---|
-| **输入输出长度组合** | `2048 512` `8192 1024` `32768 1024` `65536 1024` | 格式为 `输入长度 输出长度`，覆盖 2K~64K 输入 |
+| **输入输出长度组合** | `8192 512` `32768 512` `65536 512` | 格式为 `输入长度 输出长度`，覆盖 8K~64K 输入，输出统一 512 |
 | **并发数序列** | `1, 4, 8, 16, 32, 64, 128` | 并发数 = num_prompts（请求数与并发数相同） |
 | **数据集** | `random-ids`(SGLang) / `random`(vLLM) | 随机 token，避免前缀缓存干扰 |
 | **random-range-ratio** | `1.0`(SGLang) / `0.0`(vLLM) | 固定长度（SGLang 1.0 表示完全使用 random-input-len，vLLM 0.0 表示固定长度，两者均为固定长度） |
 | **Seed** | `123` | 固定随机种子，保证可复现 |
 | **测试间隔** | `60s` | 每组测试后等待服务恢复稳态 |
 
-**测试矩阵**：7 个并发级别 × 4 个 IO 组合 = **28 组测试**（每个框架）。
+**测试矩阵**：7 个并发级别 × 3 个 IO 组合 = **21 组测试**（每个框架）。
 
 ### 1.3 测试结果表
 
@@ -52,11 +52,11 @@
 
 | 模型名称 | 推理框架 | 输入长度 | 输出长度 | 并发数 | prefix长度 | 输入token吞吐量\_\<芯片类型\> (toks/s) | 输出token吞吐量\_\<芯片类型\> (toks/s) | 总token吞吐量\_\<芯片类型\> (toks/s) | Mean TTFT\_\<芯片类型\> (ms) | P99 TTFT\_\<芯片类型\> (ms) | Mean TPOT\_\<芯片类型\> (ms) |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| \<模型名\> | \<框架\> | 2048 | 512 | 1 | 0 | | | | | | |
-| \<模型名\> | \<框架\> | 2048 | 512 | 4 | 0 | | | | | | |
-| \<模型名\> | \<框架\> | 2048 | 512 | 8 | 0 | | | | | | |
+| \<模型名\> | \<框架\> | 8192 | 512 | 1 | 0 | | | | | | |
+| \<模型名\> | \<框架\> | 8192 | 512 | 4 | 0 | | | | | | |
+| \<模型名\> | \<框架\> | 8192 | 512 | 8 | 0 | | | | | | |
 | ... | ... | ... | ... | ... | ... | | | | | | |
-| \<模型名\> | \<框架\> | 65536 | 1024 | 128 | 0 | | | | | | |
+| \<模型名\> | \<框架\> | 65536 | 512 | 128 | 0 | | | | | | |
 
 **填写说明**：
 
@@ -104,7 +104,7 @@ BACKGROUND=true
 # 并发数列表（同时也是 num-prompts 的值）
 DEFAULT_CONCURRENCY="1,4,8,16,32,64,128"
 # 输入输出长度组合，格式 "in_len out_len"，组合之间逗号分隔
-DEFAULT_IO="2048 512,8192 1024,32768 1024,65536 1024"
+DEFAULT_IO="8192 512,32768 512,65536 512"
 
 # --- 参数解析 ---
 usage() {
@@ -480,7 +480,7 @@ python3 "${SCRIPT_DIR}/csv_to_md.py" \
 ./bench.sh -F sglang \
   -u http://127.0.0.1:8080 -m /data/model -n model-name -t H100 \
   -c 1,8,32,128 \
-  -i "2048 512,8192 1024" \
+  -i "8192 512,32768 512" \
   -T zhangsan -P agg
 
 # 指定报告目录和间隔时间
@@ -500,7 +500,7 @@ python3 "${SCRIPT_DIR}/csv_to_md.py" \
 | `--served-model-name` | `-n` | **必选** 服务模型名（取 `/` `\` 分割后最后一段，清除 `:` `\` 作为目录名） | — |
 | `--report-dir` | `-r` | 报告输出目录 | `./sglang_reports` / `./vllm_reports`（按框架自动选择） |
 | `--concurrency` | `-c` | 并发数列表（逗号分隔） | `1,4,8,16,32,64,128` |
-| `--io-combinations` | `-i` | IO组合（逗号分隔，每组"in out"） | `2048 512,8192 1024,...` |
+| `--io-combinations` | `-i` | IO组合（逗号分隔，每组"in out"） | `8192 512,32768 512,...` |
 | `--sleep` | `-s` | 每次测试间隔秒数 | `60` |
 | `--foreground` | `-f` | 前台执行（脚本默认后台执行） | — |
 | `--chip-type` | `-t` | **必选** 芯片类型（用于结果 CSV 列名后缀，如 `H100`/`B200`） | — |
@@ -572,8 +572,8 @@ CSV 示例：
 
 ```
 模型名称,推理框架,输入长度,输出长度,并发数,prefix长度,输入token吞吐量_H100 (toks/s),输出token吞吐量_H100 (toks/s),总token吞吐量_H100 (toks/s),Mean TTFT_H100 (ms),P99 TTFT_H100 (ms),Mean TPOT_H100 (ms)
-glm-5.2-fp8,sglang,2048,512,1,0,152.79,95.49,3915.14,321.42,1181.54,9.25
-glm-5.2-fp8,sglang,8192,1024,128,0,152.64,152.64,305.28,321.42,1181.54,9.25
+glm-5.2-fp8,sglang,8192,512,1,0,152.64,95.40,248.04,521.44,1820.55,9.25
+glm-5.2-fp8,sglang,8192,512,128,0,152.64,95.40,248.04,321.42,1181.54,9.25
 ```
 
 也可以**手动执行**收集脚本（如只收集已有日志）：
@@ -1026,8 +1026,8 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 
 | 参数 | 值 | 说明 |
 |---|---|---|
-| **前缀长度** | `4096, 32768, 65536` | 3 级，覆盖小/中/大 KV cache |
-| **输出长度** | `1024` | 固定，足够 decode 迭代测量吞吐 |
+| **前缀长度** | `8192, 32768, 65536` | 3 级，覆盖小/中/大 KV cache |
+| **输出长度** | `512` | 固定，足够 decode 迭代测量吞吐 |
 | **新增 token 数** | `1` | 每请求在共享前缀后新增 1 个 token（确保 prefill≈0） |
 | **并发数** | `1, 4, 8, 16, 32, 64, 128` | max-concurrency |
 | **num-prompts** | `2 × 并发数` | 稀释首个请求 prefill 开销（bench 工具无预热机制） |
@@ -1058,8 +1058,8 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
   -u http://127.0.0.1:8080 \
   -m /data1/GLM-5.2-Channel-FP8-w8a8 \
   -n glm-5.2-fp8 -t H100 \
-  -p 4096,32768,65536 \
-  -o 1024 \
+  -p 8192,32768,65536 \
+  -o 512 \
   -c 1,4,8,16,32,64,128 \
   -T zhangsan -P agg
 
@@ -1068,8 +1068,8 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
   -u http://127.0.0.1:8000 \
   -m /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
   -n glm-5.2-fp8 -t H100 \
-  -p 4096,32768,65536 \
-  -o 1024 \
+  -p 8192,32768,65536 \
+  -o 512 \
   -c 1,4,8,16,32,64,128 \
   -T zhangsan -P agg
 
@@ -1093,8 +1093,8 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 | `--base-url` | `-u` | ✅ | — | 推理服务地址 |
 | `--model-path` | `-m` | ✅ | — | 模型路径 |
 | `--served-model-name` | `-n` | ✅ | — | 服务模型名 |
-| `--prefix-lens` | `-p` | | `4096,32768,65536` | 前缀长度列表 |
-| `--output-lens` | `-o` | | `1024` | 输出长度列表 |
+| `--prefix-lens` | `-p` | | `8192,32768,65536` | 前缀长度列表 |
+| `--output-lens` | `-o` | | `512` | 输出长度列表 |
 | `--concurrency` | `-c` | | `1,4,8,16,32,64,128` | 并发数列表（num_prompts = 2×并发） |
 | `--chip-type` | `-t` | ✅ | — | 芯片类型（CSV 列名后缀） |
 | `--tester` | `-T` | ✅ | — | 测试人员（用于报告目录层级和报告命名） |
@@ -1117,7 +1117,7 @@ python -m sglang.benchmark.serving \
   --gsp-prompts-per-group $num_prompts \   # = 2 × 并发数，稀释首请求 prefill
   --gsp-system-prompt-len $prefix_len   \   # 共享前缀长度
   --gsp-question-len 1                  \   # 每请求仅 1 个新 token
-  --gsp-output-len $output_len           \   # 1024
+  --gsp-output-len $output_len           \   # 512
   --num-prompts $num_prompts --max-concurrency $concurrency \   # num_prompts = 2 × 并发数
   --seed 123
 ```
@@ -1135,7 +1135,7 @@ vllm bench serve \
   --prefix-repetition-prefix-len $prefix_len   \   # 共享前缀长度
   --prefix-repetition-suffix-len 1              \   # 每请求仅 1 个新 token
   --prefix-repetition-num-prefixes 1           \   # 1 个前缀 → 所有请求共享
-  --prefix-repetition-output-len $output_len    \   # 1024
+  --prefix-repetition-output-len $output_len    \   # 512
   --num-prompts $num_prompts --max-concurrency $concurrency \   # num_prompts = 2 × 并发数
   --trust-remote-code --temperature 0.7 --seed 123 \
   --metric_percentiles 95,99 --ready-check-timeout-sec 30
@@ -1174,7 +1174,7 @@ vllm bench serve \
 python3 _scripts/decode_http_sweep.py \
   --base-url http://127.0.0.1:30000 \
   --model glm-5.2-fp8 \
-  --prefix-lens 4096,32768,65536 \
+  --prefix-lens 8192,32768,65536 \
   --output-lens 1024 \
   --batches 1,4,8,16,32,64,128 \
   --vocab-size 151552 \
@@ -1186,7 +1186,7 @@ python3 _scripts/decode_http_sweep.py \
 python3 _scripts/decode_http_sweep.py \
   --base-url http://127.0.0.1:30000 --model glm-5.2-fp8 \
   --mode steady \
-  --prefix-lens 4096 --output-lens 1024 \
+  --prefix-lens 8192 --output-lens 1024 \
   --concurrency 64 --duration 120 \
   --vocab-size 151552 --framework sglang --tp 8 \
   --out results/decode_steady.csv
@@ -1208,8 +1208,8 @@ decode_tok_s,ttft_ms,tpot_ms,note
 
 | 参数 | 默认值 | 说明 |
 |---|---|---|
-| `--prefix-lens` | `4096,32768,65536` | 共享前缀长度 |
-| `--output-lens` | `1024` | decode 输出长度 |
+| `--prefix-lens` | `8192,32768,65536` | 共享前缀长度 |
+| `--output-lens` | `512` | decode 输出长度 |
 | `--batches` | `1,4,8,16,32,64,128` | batch 模式并发数 |
 | `--new-tokens` | `1` | 每请求新增 token 数（保持 1） |
 | `--token-budget` | `196608` | 跳过 prefix + output×batch 超限格子 |
@@ -1222,10 +1222,10 @@ decode_tok_s,ttft_ms,tpot_ms,note
 
 | 模型名称 | 推理框架 | 输入长度 | 输出长度 | 并发数 | prefix长度 | 输入token吞吐量\_\<芯片类型\> (toks/s) | 输出token吞吐量\_\<芯片类型\> (toks/s) | 总token吞吐量\_\<芯片类型\> (toks/s) | Mean TTFT\_\<芯片类型\> (ms) | P99 TTFT\_\<芯片类型\> (ms) | Mean TPOT\_\<芯片类型\> (ms) |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| \<模型名\> | \<框架\> | 1 | 1024 | 1 | 4096 | | | | | | |
-| \<模型名\> | \<框架\> | 1 | 1024 | 4 | 4096 | | | | | | |
+| \<模型名\> | \<框架\> | 1 | 512 | 1 | 8192 | | | | | | |
+| \<模型名\> | \<框架\> | 1 | 512 | 4 | 8192 | | | | | | |
 | ... | ... | ... | ... | ... | ... | | | | | | |
-| \<模型名\> | \<框架\> | 1 | 1024 | 128 | 65536 | | | | | | |
+| \<模型名\> | \<框架\> | 1 | 512 | 128 | 65536 | | | | | | |
 
 **指标口径**：
 

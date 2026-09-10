@@ -61,7 +61,7 @@ general-benchmark-test/
 ./_scripts/bench.sh -F sglang \
   -u http://127.0.0.1:8080 -m /data/model -n model-name -t H100 \
   -c 1,8,32,128 \
-  -i "2048 512,8192 1024" \
+  -i "8192 512,32768 512" \
   -T zhangsan -P agg
 
 # 前台执行 + 自定义报告目录
@@ -79,7 +79,7 @@ general-benchmark-test/
 | `--model-path` | `-m` | ✅ | — | 模型路径 |
 | `--served-model-name` | `-n` | ✅ | — | 服务模型名 |
 | `--concurrency` | `-c` | | `1,4,8,16,32,64,128` | 并发数列表 |
-| `--io-combinations` | `-i` | | `2048 512,8192 1024,32768 1024,65536 1024` | IO 组合（逗号分隔，每组 `"输入 输出"`） |
+| `--io-combinations` | `-i` | | `8192 512,32768 512,65536 512` | IO 组合（逗号分隔，每组 `"输入 输出"`） |
 | `--chip-type` | `-t` | ✅ | — | 芯片类型（CSV 列名后缀，如 `H100`） |
 | `--tester` | `-T` | ✅ | — | 测试人员（用于报告目录层级和报告命名） |
 | `--pd` | `-P` | ✅ | — | PD部署模式: `agg`(非PD分离) 或 `disagg`(PD分离) |
@@ -204,8 +204,8 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
   -u http://127.0.0.1:8080 \
   -m /data1/GLM-5.2-Channel-FP8-w8a8 \
   -n glm-5.2-fp8 -t H100 \
-  -p 4096,32768,65536 \
-  -o 1024 \
+  -p 8192,32768,65536 \
+  -o 512 \
   -c 1,4,8,16,32,64,128 \
   -T zhangsan -P agg
 
@@ -214,8 +214,8 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
   -u http://127.0.0.1:8000 \
   -m /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
   -n glm-5.2-fp8 -t H100 \
-  -p 4096,32768,65536 \
-  -o 1024 \
+  -p 8192,32768,65536 \
+  -o 512 \
   -c 1,4,8,16,32,64,128 \
   -T zhangsan -P agg
 ```
@@ -240,8 +240,8 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 | `--base-url` | `-u` | ✅ | — | 推理服务地址 |
 | `--model-path` | `-m` | ✅ | — | 模型路径 |
 | `--served-model-name` | `-n` | ✅ | — | 服务模型名 |
-| `--prefix-lens` | `-p` | | `4096,32768,65536` | 前缀长度列表 |
-| `--output-lens` | `-o` | | `1024` | 输出长度列表 |
+| `--prefix-lens` | `-p` | | `8192,32768,65536` | 前缀长度列表 |
+| `--output-lens` | `-o` | | `512` | 输出长度列表 |
 | `--concurrency` | `-c` | | `1,4,8,16,32,64,128` | 并发数列表（num_prompts = 2×并发） |
 | `--chip-type` | `-t` | ✅ | — | 芯片类型（CSV 列名后缀） |
 | `--tester` | `-T` | ✅ | — | 测试人员（用于报告目录层级和报告命名） |
@@ -301,7 +301,7 @@ python3 _scripts/csv_to_md.py \
 |---|---|---|---|
 | **脚本** | `bench.sh` | `prefill_bench.sh` | `decode_bench.sh` |
 | **测试目标** | 端到端性能 | prefill 前向算力 | decode 迭代性能 |
-| **output_len** | 512/1024 | 1（固定） | 1024 |
+| **output_len** | 512 | 1（固定） | 512 |
 | **前缀缓存** | 开/关均可 | **关** | **开** |
 | **数据集** | `random-ids`/`random` | 同左 | `generated-shared-prefix`/`prefix_repetition` |
 | **num_prompts** | = 并发数 | = 并发数 | = 2×并发数 |

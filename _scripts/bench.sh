@@ -33,7 +33,7 @@ BACKGROUND=true
 # 并发数列表（同时也是 num-prompts 的值）
 DEFAULT_CONCURRENCY="1,4,8,16,32,64,128"
 # 输入输出长度组合，格式 "in_len out_len"，组合之间逗号分隔
-DEFAULT_IO="2048 512,8192 1024,32768 1024,65536 1024"
+DEFAULT_IO="8192 512,32768 512,65536 512"
 
 # --- 参数解析 ---
 usage() {

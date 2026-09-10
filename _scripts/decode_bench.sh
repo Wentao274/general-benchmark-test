@@ -38,9 +38,9 @@ PD=""
 BACKGROUND=true
 
 # 前缀长度列表（模拟 KV cache 已就位的上下文长度）
-DEFAULT_PREFIX_LENS="4096,32768,65536"
+DEFAULT_PREFIX_LENS="8192,32768,65536"
 # decode 输出长度列表
-DEFAULT_OUTPUT_LENS="1024"
+DEFAULT_OUTPUT_LENS="512"
 # 并发数列表
 DEFAULT_CONCURRENCY="1,4,8,16,32,64,128"
 
@@ -75,7 +75,7 @@ Usage: $0 -F <sglang|vllm> [OPTIONS]
 示例（默认后台执行）:
   $0 -F sglang -u http://127.0.0.1:8080 -m /data/model -n model-name -t H100 -T zhangsan -P agg
   $0 -F vllm   -u http://127.0.0.1:8000 -m /data/model -n model-name -t H100 -T zhangsan -P disagg
-  $0 -F sglang -f -u http://... -p 4096,16384 -o 1024 -c 1,8,64 -T zhangsan -P agg   # 前台执行
+  $0 -F sglang -f -u http://... -p 8192,16384 -o 512 -c 1,8,64 -T zhangsan -P agg   # 前台执行
 EOF
 }
 
