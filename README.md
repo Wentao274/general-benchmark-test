@@ -262,7 +262,7 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 - **Mean TPOT** = `Mean TPOT (ms)`
 - **Mean TTFT** = `Mean TTFT (ms)`（应很小，若很大说明缓存未生效）
 
-> num_prompts = 2 × 并发数，用于稀释首个请求的 prefill 开销（bench 工具无预热机制）。
+> num_prompts = 2 × 并发数，增加统计样本数，提高吞吐和延迟测量稳定性（bench 工具自带 warmup 预热前缀缓存）。
 
 ---
 

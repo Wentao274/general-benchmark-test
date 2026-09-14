@@ -1030,7 +1030,7 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 | **输出长度** | `512` | 固定，足够 decode 迭代测量吞吐 |
 | **新增 token 数** | `1` | 每请求在共享前缀后新增 1 个 token（确保 prefill≈0） |
 | **并发数** | `1, 4, 8, 16, 32, 64, 128` | max-concurrency |
-| **num-prompts** | `2 × 并发数` | 稀释首个请求 prefill 开销（bench 工具无预热机制） |
+| **num-prompts** | `2 × 并发数` | 增加统计样本数，提高吞吐/延迟测量稳定性（bench 工具自带 warmup 预热，已填充前缀缓存） |
 | **random-range-ratio** | `1.0`(SGLang) / `0.0`(vLLM) | 固定长度（SGLang 1.0 表示完全使用 random-input-len，vLLM 0.0 表示固定长度，两者均为固定长度） |
 | **Seed** | `123` | 可复现 |
 
@@ -1114,7 +1114,7 @@ python -m sglang.benchmark.serving \
   --served-model-name "$SERVED_MODEL_NAME" \
   --dataset-name generated-shared-prefix \
   --gsp-num-groups 1                    \   # 1 组 → 所有请求共享同一前缀
-  --gsp-prompts-per-group $num_prompts \   # = 2 × 并发数，稀释首请求 prefill
+  --gsp-prompts-per-group $num_prompts \   # = 2 × 并发数，增加样本量提高统计稳定性
   --gsp-system-prompt-len $prefix_len   \   # 共享前缀长度
   --gsp-question-len 1                  \   # 每请求仅 1 个新 token
   --gsp-output-len $output_len           \   # 512
@@ -1146,9 +1146,10 @@ vllm bench serve \
 > 和 `prefix_repetition` 显式保证同组请求共享完全相同的前缀，首个请求填充缓存
 > 后后续请求全部命中，确保 prefill≈0，测到纯 decode 性能。
 
-> **bench 工具的局限**：benchmark.serving / vllm bench 并发发送所有请求，首个请求需
-> prefill 完整前缀才能填充缓存，后续请求才命中。已通过 `num_prompts = 2 × 并发数`
-> 稀释首个请求的 prefill 开销，但 TTFT 仍受首请求污染。若需精确测量 TTFT/TPOT，使用下方 HTTP 脚本。
+> **关于 num_prompts = 2 × 并发数**：bench 工具自带 warmup 机制（启动时先发送 1 个请求
+> 预热前缀缓存），主 benchmark 的所有请求均可命中缓存，不存在首请求 prefill 污染问题。
+> 设为 2 倍并发数是为了增加统计样本、让服务端经历"满并发 slot → 请求完成 → 新请求补入"
+> 的动态过程，更接近稳态负载。若需流式 SSE 精确测量 TTFT/TPOT，可使用下方 HTTP 脚本。
 
 #### 2.3.5 测试脚本（HTTP 精确测量）
 
@@ -1290,7 +1291,7 @@ general-benchmark-test/
 |---|---|---|
 | `bench.sh` | `sglang` (benchmark.serving) / `vllm` (bench serve) | 统一脚本，`-F` 指定框架 |
 | `prefill_bench.sh` | `sglang` / `vllm` | output_len=1 变体，`-F` 指定框架 |
-| `decode_bench.sh` | `sglang` / `vllm` | SGLang 用 GSP / vLLM 用 prefix_repetition，`num_prompts = 2×并发` 稀释首请求 prefill |
+| `decode_bench.sh` | `sglang` / `vllm` | SGLang 用 GSP / vLLM 用 prefix_repetition，`num_prompts = 2×并发` 增加样本量 |
 | `decode_http_sweep.py` | **仅 Python 标准库** | 零第三方依赖，跨框架/跨厂商可用【仅供参考，实际测试不使用】 |
 | `collect_results.py` | **仅 Python 标准库** | 扫描日志提取指标生成 CSV，所有脚本结束后自动调用 |
 | `csv_to_md.py` | **仅 Python 标准库** | 将 CSV 转换为 Markdown 测试报告（三部分：结果表格 + 服务启动命令 + 测试命令），自动读取 `serve_command.sh`，找不到或为空则报错 |
