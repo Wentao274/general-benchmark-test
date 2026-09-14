@@ -242,7 +242,7 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 | `--served-model-name` | `-n` | ✅ | — | 服务模型名 |
 | `--prefix-lens` | `-p` | | `8192,32768,65536` | 前缀长度列表 |
 | `--output-lens` | `-o` | | `512` | 输出长度列表 |
-| `--concurrency` | `-c` | | `1,4,8,16,32,64,128` | 并发数列表（num_prompts = 2×并发） |
+| `--concurrency` | `-c` | | `1,4,8,16,32,64,128` | 并发数列表（num_prompts = 10×并发） |
 | `--chip-type` | `-t` | ✅ | — | 芯片类型（CSV 列名后缀） |
 | `--tester` | `-T` | ✅ | — | 测试人员（用于报告目录层级和报告命名） |
 | `--pd` | `-P` | ✅ | — | PD部署模式: `agg`(非PD分离) 或 `disagg`(PD分离) |
@@ -262,7 +262,7 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 - **Mean TPOT** = `Mean TPOT (ms)`
 - **Mean TTFT** = `Mean TTFT (ms)`（应很小，若很大说明缓存未生效）
 
-> num_prompts = 2 × 并发数，增加统计样本数，提高吞吐和延迟测量稳定性（bench 工具自带 warmup 预热前缀缓存）。
+> num_prompts = 10 × 并发数，增加统计样本数，提高吞吐和延迟测量稳定性（bench 工具自带 warmup 预热前缀缓存）。
 
 ---
 
@@ -304,7 +304,7 @@ python3 _scripts/csv_to_md.py \
 | **output_len** | 512 | 1（固定） | 512 |
 | **前缀缓存** | 开/关均可 | **关** | **开** |
 | **数据集** | `random-ids`/`random` | 同左 | `generated-shared-prefix`/`prefix_repetition` |
-| **num_prompts** | = 并发数 | = 并发数 | = 2×并发数 |
+| **num_prompts** | = 并发数 | = 5×并发数 | = 10×并发数 |
 | **核心指标** | 输入/输出/总吞吐量、TTFT、TPOT | prefill 吞吐量、TTFT | decode 吞吐量、TPOT |
 
 详见 [Model_Inference_Benchmark_TestStrategy.md](Model_Inference_Benchmark_TestStrategy.md) 完整测试方案文档。

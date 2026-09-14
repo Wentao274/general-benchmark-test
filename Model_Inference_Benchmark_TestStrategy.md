@@ -865,7 +865,7 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 |---|---|---|
 | **输入长度** | `65536` | 固定 64K，测量最大 prefill 算力 |
 | **输出长度** | `1` | 固定 1，确保 0 次 decode |
-| **并发数 / num-prompts** | `1, 4, 8, 16, 32, 64, 128` | 并发数 = 请求数 |
+| **并发数 / num-prompts** | `1, 4, 8, 16, 32, 64, 128`（num_prompts = 5 × 并发数） | 并发数控制 max-concurrency，num_prompts = 5×并发数增加统计样本 |
 | **random-range-ratio** | `1.0`(SGLang) / `0.0`(vLLM) | 固定长度（SGLang 1.0 表示完全使用 random-input-len，vLLM 0.0 表示固定长度，两者均为固定长度） |
 | **random-prefix-len** | `0` | 无共享前缀 |
 | **Seed** | `123` | 可复现 |
@@ -926,7 +926,7 @@ python -m sglang.benchmark.serving \
   --random-input-len  $input_len    \   # 65536
   --random-output-len 1             \   # 固定 1
   --random-range-ratio 1.0          \
-  --num-prompts $concurrency        \
+  --num-prompts $num_prompts     \   # = 5 × 并发数
   --max-concurrency $concurrency    \
   --seed 123
 ```
@@ -943,7 +943,7 @@ vllm bench serve \
   --random-input-len  $input_len \
   --random-output-len 1 \
   --random-prefix-len 0 \
-  --num-prompts $concurrency --max-concurrency $concurrency \
+  --num-prompts $num_prompts --max-concurrency $concurrency \   # num_prompts = 5 × 并发数
   --trust-remote-code --temperature 0.7 \
   --random-range-ratio 0.0 --seed 123 \
   --metric_percentiles 95,99 --ready-check-timeout-sec 30
@@ -1030,7 +1030,7 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 | **输出长度** | `512` | 固定，足够 decode 迭代测量吞吐 |
 | **新增 token 数** | `1` | 每请求在共享前缀后新增 1 个 token（确保 prefill≈0） |
 | **并发数** | `1, 4, 8, 16, 32, 64, 128` | max-concurrency |
-| **num-prompts** | `2 × 并发数` | 增加统计样本数，提高吞吐/延迟测量稳定性（bench 工具自带 warmup 预热，已填充前缀缓存） |
+| **num-prompts** | `10 × 并发数` | 增加统计样本数，提高吞吐/延迟测量稳定性（bench 工具自带 warmup 预热，已填充前缀缓存） |
 | **random-range-ratio** | `1.0`(SGLang) / `0.0`(vLLM) | 固定长度（SGLang 1.0 表示完全使用 random-input-len，vLLM 0.0 表示固定长度，两者均为固定长度） |
 | **Seed** | `123` | 可复现 |
 
@@ -1095,7 +1095,7 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 | `--served-model-name` | `-n` | ✅ | — | 服务模型名 |
 | `--prefix-lens` | `-p` | | `8192,32768,65536` | 前缀长度列表 |
 | `--output-lens` | `-o` | | `512` | 输出长度列表 |
-| `--concurrency` | `-c` | | `1,4,8,16,32,64,128` | 并发数列表（num_prompts = 2×并发） |
+| `--concurrency` | `-c` | | `1,4,8,16,32,64,128` | 并发数列表（num_prompts = 10×并发） |
 | `--chip-type` | `-t` | ✅ | — | 芯片类型（CSV 列名后缀） |
 | `--tester` | `-T` | ✅ | — | 测试人员（用于报告目录层级和报告命名） |
 | `--pd` | `-P` | ✅ | — | PD部署模式: `agg`(非PD分离) 或 `disagg`(PD分离) |
@@ -1114,11 +1114,11 @@ python -m sglang.benchmark.serving \
   --served-model-name "$SERVED_MODEL_NAME" \
   --dataset-name generated-shared-prefix \
   --gsp-num-groups 1                    \   # 1 组 → 所有请求共享同一前缀
-  --gsp-prompts-per-group $num_prompts \   # = 2 × 并发数，增加样本量提高统计稳定性
+  --gsp-prompts-per-group $num_prompts \   # = 10 × 并发数，增加样本量提高统计稳定性
   --gsp-system-prompt-len $prefix_len   \   # 共享前缀长度
   --gsp-question-len 1                  \   # 每请求仅 1 个新 token
   --gsp-output-len $output_len           \   # 512
-  --num-prompts $num_prompts --max-concurrency $concurrency \   # num_prompts = 2 × 并发数
+  --num-prompts $num_prompts --max-concurrency $concurrency \   # num_prompts = 10 × 并发数
   --seed 123
 ```
 
@@ -1136,7 +1136,7 @@ vllm bench serve \
   --prefix-repetition-suffix-len 1              \   # 每请求仅 1 个新 token
   --prefix-repetition-num-prefixes 1           \   # 1 个前缀 → 所有请求共享
   --prefix-repetition-output-len $output_len    \   # 512
-  --num-prompts $num_prompts --max-concurrency $concurrency \   # num_prompts = 2 × 并发数
+  --num-prompts $num_prompts --max-concurrency $concurrency \   # num_prompts = 10 × 并发数
   --trust-remote-code --temperature 0.7 --seed 123 \
   --metric_percentiles 95,99 --ready-check-timeout-sec 30
 ```
@@ -1146,9 +1146,9 @@ vllm bench serve \
 > 和 `prefix_repetition` 显式保证同组请求共享完全相同的前缀，首个请求填充缓存
 > 后后续请求全部命中，确保 prefill≈0，测到纯 decode 性能。
 
-> **关于 num_prompts = 2 × 并发数**：bench 工具自带 warmup 机制（启动时先发送 1 个请求
+> **关于 num_prompts = 10 × 并发数**：bench 工具自带 warmup 机制（启动时先发送 1 个请求
 > 预热前缀缓存），主 benchmark 的所有请求均可命中缓存，不存在首请求 prefill 污染问题。
-> 设为 2 倍并发数是为了增加统计样本、让服务端经历"满并发 slot → 请求完成 → 新请求补入"
+> 设为 10 倍并发数是为了增加统计样本、让服务端经历"满并发 slot → 请求完成 → 新请求补入"
 > 的动态过程，更接近稳态负载。若需流式 SSE 精确测量 TTFT/TPOT，可使用下方 HTTP 脚本。
 
 #### 2.3.5 测试脚本（HTTP 精确测量）
@@ -1291,7 +1291,7 @@ general-benchmark-test/
 |---|---|---|
 | `bench.sh` | `sglang` (benchmark.serving) / `vllm` (bench serve) | 统一脚本，`-F` 指定框架 |
 | `prefill_bench.sh` | `sglang` / `vllm` | output_len=1 变体，`-F` 指定框架 |
-| `decode_bench.sh` | `sglang` / `vllm` | SGLang 用 GSP / vLLM 用 prefix_repetition，`num_prompts = 2×并发` 增加样本量 |
+| `decode_bench.sh` | `sglang` / `vllm` | SGLang 用 GSP / vLLM 用 prefix_repetition，`num_prompts = 10×并发` 增加样本量 |
 | `decode_http_sweep.py` | **仅 Python 标准库** | 零第三方依赖，跨框架/跨厂商可用【仅供参考，实际测试不使用】 |
 | `collect_results.py` | **仅 Python 标准库** | 扫描日志提取指标生成 CSV，所有脚本结束后自动调用 |
 | `csv_to_md.py` | **仅 Python 标准库** | 将 CSV 转换为 Markdown 测试报告（三部分：结果表格 + 服务启动命令 + 测试命令），自动读取 `serve_command.sh`，找不到或为空则报错 |
@@ -1303,5 +1303,5 @@ general-benchmark-test/
 | 测试场景 | SGLang 启动参数 | vLLM 启动参数 | 前缀缓存 | 数据集 | num_prompts |
 |---|---|---|---|---|---|
 | **第1章 Benchmark** | 默认 | 默认 | 开/关均可 | `random-ids` / `random` | = 并发数 |
-| **第2章 纯 Prefill** | `--disable-radix-cache` | `--no-enable-prefix-caching` | **关** | `random-ids` / `random` | = 并发数 |
-| **第2章 纯 Decode** | 默认（不加 `--disable-radix-cache`） | 默认（不加 `--no-enable-prefix-caching`） | **开** | `generated-shared-prefix` / `prefix_repetition` | = 2×并发数 |
+| **第2章 纯 Prefill** | `--disable-radix-cache` | `--no-enable-prefix-caching` | **关** | `random-ids` / `random` | = 5×并发数 |
+| **第2章 纯 Decode** | 默认（不加 `--disable-radix-cache`） | 默认（不加 `--no-enable-prefix-caching`） | **开** | `generated-shared-prefix` / `prefix_repetition` | = 10×并发数 |

@@ -234,8 +234,8 @@ echo "=========================================="
 for prefix_len in "${prefix_lens[@]}"; do
   for output_len in "${output_lens[@]}"; do
     for concurrency in "${concurrency_list[@]}"; do
-      # num_prompts = 2 × 并发数，增加统计样本数，提高测量稳定性
-      num_prompts=$((concurrency * 2))
+      # num_prompts = 10 × 并发数，增加统计样本数，提高测量稳定性
+      num_prompts=$((concurrency * 10))
       log_file="${RUN_DIR}/decode_bs-${concurrency}_prefix-${prefix_len}-output-${output_len}.log"
       jsonl_file="${RUN_DIR}/decode_bs-${concurrency}_prefix-${prefix_len}-output-${output_len}.jsonl"
       echo ""

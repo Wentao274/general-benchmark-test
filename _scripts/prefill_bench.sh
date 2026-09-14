@@ -201,15 +201,15 @@ echo "=== PD Mode:      $PD"
 echo "=========================================="
 
 for concurrency in "${concurrency_list[@]}"; do
-  num_prompts=$concurrency
+  num_prompts=$((concurrency * 5))
   echo ""
   echo "--- Concurrency=$concurrency, Num Prompts=$num_prompts ---"
 
   for combo in "${io_combinations[@]}"; do
     input_len=$(echo "$combo" | awk '{print $1}')
     output_len=$(echo "$combo" | awk '{print $2}')
-    log_file="${RUN_DIR}/prefill_bs-${num_prompts}_input-${input_len}.log"
-    jsonl_file="${RUN_DIR}/prefill_bs-${num_prompts}_input-${input_len}.jsonl"
+    log_file="${RUN_DIR}/prefill_bs-${concurrency}_input-${input_len}.log"
+    jsonl_file="${RUN_DIR}/prefill_bs-${concurrency}_input-${input_len}.jsonl"
     echo ""
     echo ">>> Prefill: Input=$input_len, Output=$output_len, Concurrency=$concurrency"
     echo ">>> Log file: $log_file"
