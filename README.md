@@ -282,6 +282,31 @@ Markdown 报告分三部分：
 | 二、模型服务启动命令 | 项目根目录 `serve_command.sh`（从模板复制） |
 | 三、Benchmark 测试命令 | 脚本自动记录实际执行的 bench 工具命令 |
 
+### 手动收集结果
+
+如需从已有日志手动汇总为 CSV（例如自动流程中断、或只跑了日志没生成 CSV）：
+
+```bash
+python3 _scripts/collect_results.py \
+  --report-dir ./sglang_reports/zhangsan/glm-5.2-fp8/20260831_143022 \
+  --model-name glm-5.2-fp8 \
+  --framework sglang \
+  --chip-type H100 \
+  --out ./sglang_reports/zhangsan/glm-5.2-fp8/20260831_143022/results.csv
+```
+
+脚本会递归扫描 `--report-dir` 下所有 `bench_*/*.log`、`prefill_*/*.log`、`decode_*/*.log`，按文件名解析测试类型与参数，提取吞吐量、TTFT、TPOT 等指标汇总为 CSV。非测试日志（如总日志）会自动跳过。
+
+| 参数 | 必选 | 默认值 | 说明 |
+|---|---|---|---|
+| `--report-dir` | ✅ | — | bench 日志根目录（递归扫描子目录） |
+| `--model-name` | ✅ | — | 模型名称（填入 CSV 的模型名称列；会自动取路径最后一段并去除 `:` `\`） |
+| `--out` | ✅ | — | 输出 CSV 文件路径 |
+| `--framework` | | `""` | 推理框架（填入 CSV 的推理框架列，如 `sglang` / `vllm`） |
+| `--chip-type` | | `""` | 芯片类型，用于 CSV 列名后缀（如 `H100` / `B200`） |
+
+> 注意：所有参数名均使用连字符（`--report-dir`），使用下划线（`--report_dir`）会被 argparse 判定为未识别参数导致报错。
+
 ### 手动生成报告
 
 如需从已有 CSV 重新生成报告：
