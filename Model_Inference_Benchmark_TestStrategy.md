@@ -502,6 +502,7 @@ python3 "${SCRIPT_DIR}/csv_to_md.py" \
 | `--concurrency` | `-c` | 并发数列表（逗号分隔） | `1,4,8,16,32,64,128` |
 | `--io-combinations` | `-i` | IO组合（逗号分隔，每组"in out"） | `8192 512,32768 512,...` |
 | `--sleep` | `-s` | 每次测试间隔秒数 | `60` |
+| `--describe` | `-d` | 模型描述信息（可选，填入报告末尾单独章节） | — |
 | `--foreground` | `-f` | 前台执行（脚本默认后台执行） | — |
 | `--chip-type` | `-t` | **必选** 芯片类型（用于结果 CSV 列名后缀，如 `H100`/`B200`） | — |
 | `--tester` | `-T` | **必选** 测试人员（用于报告目录层级和报告命名） | — |
@@ -911,6 +912,7 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 | `--tester` | `-T` | ✅ | — | 测试人员（用于报告目录层级和报告命名） |
 | `--pd` | `-P` | ✅ | — | PD部署模式: `agg`(非PD分离) 或 `disagg`(PD分离) |
 | `--sleep` | `-s` | | `60` | 每组测试间隔（秒） |
+| `--describe` | `-d` | | — | 模型描述信息（可选，填入报告末尾单独章节） |
 | `--foreground` | `-f` | | 后台 | 前台执行 |
 | `--report-dir` | `-r` | | `./{framework}_prefill_reports` | 报告输出目录 |
 
@@ -1100,6 +1102,7 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 | `--tester` | `-T` | ✅ | — | 测试人员（用于报告目录层级和报告命名） |
 | `--pd` | `-P` | ✅ | — | PD部署模式: `agg`(非PD分离) 或 `disagg`(PD分离) |
 | `--sleep` | `-s` | | `60` | 每组测试间隔（秒） |
+| `--describe` | `-d` | | — | 模型描述信息（可选，填入报告末尾单独章节） |
 | `--foreground` | `-f` | | 后台 | 前台执行 |
 | `--report-dir` | `-r` | | `./{framework}_decode_reports` | 报告输出目录 |
 

@@ -138,3 +138,11 @@ vllm bench serve \
   --ready-check-timeout-sec 30
 ```
 <!-- BENCH_COMMAND_END -->
+
+---
+
+## 四、模型描述
+
+<!-- DESCRIBE_START -->
+GLM-5.2 FP8 量化版本，8 卡 TP 部署，context length 202752，mem-fraction-static 0.9。
+<!-- DESCRIBE_END -->

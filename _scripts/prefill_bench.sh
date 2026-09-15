@@ -21,6 +21,7 @@ REPORT_DIR=""
 CHIP_TYPE=""
 TESTER=""
 PD=""
+DESCRIBE=""
 BACKGROUND=true
 
 DEFAULT_CONCURRENCY="1,4,8,16,32,64,128"
@@ -50,6 +51,7 @@ Usage: $0 -F <sglang|vllm> [OPTIONS]
   -c, --concurrency LIST        并发数列表(逗号分隔) (default: $DEFAULT_CONCURRENCY)
   -i, --io-combinations LIST    IO组合(逗号分隔,每组"in out") (default: $DEFAULT_IO)
   -s, --sleep SECONDS           每次测试间隔秒数    (default: $SLEEP_TIME)
+  -d, --describe TEXT           模型描述信息(可选,填入报告末尾)
   -f, --foreground              前台执行(默认后台)
   -h, --help                    显示帮助
 
@@ -69,6 +71,7 @@ while [[ $# -gt 0 ]]; do
     -c|--concurrency)         CONCURRENCY_ARG="$2";      shift 2 ;;
     -i|--io-combinations)     IO_ARG="$2";              shift 2 ;;
     -s|--sleep)               SLEEP_TIME="$2";           shift 2 ;;
+    -d|--describe)            DESCRIBE="$2";             shift 2 ;;
     -f|--foreground)          BACKGROUND=false;          shift   ;;
     -t|--chip-type)           CHIP_TYPE="$2";            shift 2 ;;
     -T|--tester)              TESTER="$2";               shift 2 ;;
@@ -338,7 +341,15 @@ python3 "${SCRIPT_DIR}/collect_results.py" \
 
 # --- 自动生成 Markdown 测试报告 ---
 MD_FILE="${RUN_DIR}/${TESTER}_${safe_model_name}_${CHIP_TYPE}_${FRAMEWORK}_${PD}_prefill_${RUN_TS}.md"
-python3 "${SCRIPT_DIR}/csv_to_md.py" \
-  --csv "$CSV_FILE" \
-  --output "$MD_FILE" \
-  --bench-command "$BENCH_COMMANDS"
+if [[ -n "$DESCRIBE" ]]; then
+  python3 "${SCRIPT_DIR}/csv_to_md.py" \
+    --csv "$CSV_FILE" \
+    --output "$MD_FILE" \
+    --bench-command "$BENCH_COMMANDS" \
+    --describe "$DESCRIBE"
+else
+  python3 "${SCRIPT_DIR}/csv_to_md.py" \
+    --csv "$CSV_FILE" \
+    --output "$MD_FILE" \
+    --bench-command "$BENCH_COMMANDS"
+fi

@@ -51,7 +51,8 @@ general-benchmark-test/
 ./_scripts/bench.sh -F vllm \
   -u http://127.0.0.1:8000 \
   -m /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
-  -n glm-5.2-fp8 -t H100 -T zhangsan -P agg
+  -n glm-5.2-fp8 -t H100 -T zhangsan -P agg \
+  -d "GLM-5.2 FP8 量化，8卡 TP 部署"
 ```
 
 ### 自定义参数
@@ -85,6 +86,7 @@ general-benchmark-test/
 | `--pd` | `-P` | ✅ | — | PD部署模式: `agg`(非PD分离) 或 `disagg`(PD分离) |
 | `--report-dir` | `-r` | | `./{framework}_reports` | 报告输出目录 |
 | `--sleep` | `-s` | | `60` | 每组测试间隔（秒） |
+| `--describe` | `-d` | | — | 模型描述信息（可选，填入报告末尾单独章节） |
 | `--foreground` | `-f` | | 后台 | 前台执行 |
 
 ### 产物
@@ -160,6 +162,7 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 | `--pd` | `-P` | ✅ | — | PD部署模式: `agg`(非PD分离) 或 `disagg`(PD分离) |
 | `--report-dir` | `-r` | | `./{framework}_prefill_reports` | 报告输出目录 |
 | `--sleep` | `-s` | | `60` | 每组测试间隔（秒） |
+| `--describe` | `-d` | | — | 模型描述信息（可选，填入报告末尾单独章节） |
 | `--foreground` | `-f` | | 后台 | 前台执行 |
 
 ### 产物
@@ -248,6 +251,7 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 | `--pd` | `-P` | ✅ | — | PD部署模式: `agg`(非PD分离) 或 `disagg`(PD分离) |
 | `--report-dir` | `-r` | | `./{framework}_decode_reports` | 报告输出目录 |
 | `--sleep` | `-s` | | `60` | 每组测试间隔（秒） |
+| `--describe` | `-d` | | — | 模型描述信息（可选，填入报告末尾单独章节） |
 | `--foreground` | `-f` | | 后台 | 前台执行 |
 
 ### 产物
