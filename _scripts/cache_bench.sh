@@ -439,7 +439,7 @@ for concurrency in "${concurrency_list[@]}"; do
     echo "!!! [Phase 2] Test failed (exit code: $test_status). Check log: $log_file"
     FAIL_COUNT=$((FAIL_COUNT + 1))
   else
-    error_pattern="$(check_log_errors "$log_file")"
+    error_pattern="$(check_log_errors "$log_file")" || true
     if [[ -n "$error_pattern" ]]; then
       echo "!!! [Phase 2] Log error detected: '$error_pattern'. Check log: $log_file"
       FAIL_COUNT=$((FAIL_COUNT + 1))

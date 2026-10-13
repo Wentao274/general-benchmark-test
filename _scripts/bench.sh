@@ -420,7 +420,7 @@ for concurrency in "${concurrency_list[@]}"; do
       FAIL_COUNT=$((FAIL_COUNT + 1))
     else
       # 退出码为 0 也可能全部请求失败，扫描日志错误模式
-      error_pattern="$(check_log_errors "$log_file")"
+      error_pattern="$(check_log_errors "$log_file")" || true
       if [[ -n "$error_pattern" ]]; then
         echo "!!! Log error detected: '$error_pattern'. Check log file: $log_file"
         FAIL_COUNT=$((FAIL_COUNT + 1))

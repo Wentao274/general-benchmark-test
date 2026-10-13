@@ -335,7 +335,7 @@ for prefix_len in "${prefix_lens[@]}"; do
         echo "!!! Error occurred (exit code: $bench_rc). Check log file: $log_file"
         FAIL_COUNT=$((FAIL_COUNT + 1))
       else
-        error_pattern="$(check_log_errors "$log_file")"
+        error_pattern="$(check_log_errors "$log_file")" || true
         if [[ -n "$error_pattern" ]]; then
           echo "!!! Log error detected: '$error_pattern'. Check log file: $log_file"
           FAIL_COUNT=$((FAIL_COUNT + 1))
