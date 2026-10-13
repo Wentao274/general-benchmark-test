@@ -3,14 +3,25 @@
 """collect_results.py — 扫描 bench 日志目录，提取指标汇总为 CSV
 
 支持四种测试类型的日志文件名：
-  benchmark:  bench_bs-{N}_input_len-{IL}-output_len-{OL}.log        (Prefix Cache命中率=0%)
-  prefill:    prefill_bs-{N}_input-{IL}.log                          (Prefix Cache命中率=0%, output_len=1)
-  decode:     decode_bs-{N}_prefix-{PL}-output-{OL}.log              (Prefix Cache命中率=100%, input_len=1)
-  cache:      cache_bs-{N}_hit-{HR}_input-{IL}-output-{OL}.log      (Prefix Cache命中率=HR%)
+  benchmark:  bench_bs-{N}_input_len-{IL}-output_len-{OL}.log        (缓存命中率=日志实测值, 无则 N/A)
+  prefill:    prefill_bs-{N}_input-{IL}.log                          (缓存命中率=日志实测值, 无则0%)
+  decode:     decode_bs-{N}_prefix-{PL}-output-{OL}.log              (缓存命中率=日志实测值, 无则100%)
+  cache:      cache_bs-{N}_hit-{HR}_input-{IL}-output-{OL}.log      (缓存命中率=HR%)
 
-支持两种框架的输出格式（SGLang / vLLM），自动匹配英文和中文标签。
+四种测试日志中的实测命中率来源（bench.sh / cache_bench.sh / prefill_bench.sh / decode_bench.sh 自动生成）：
+  SGLang: --cache-report 输出 L1 (radix cache) 命中率 → "Cache Hit Details" 统计段
+          脚本追加 /metrics 的 prefill_effective_tokens_total 计数器差值
+          （含 HiCache L1/L2/L3）→ "Prefix Cache Hit Details (SGLang /metrics)" 统计段
+  vLLM:   脚本在测试前后查询服务端 /metrics 的 vllm:prefix_cache_* 计数器，
+          差值计算后附加 "Prefix Cache Hit Details" 统计段到日志
+  两者均输出 "Cache hit rate: X.X%" 行，取日志中最后一个匹配（/metrics 值覆盖 --cache-report）。
+  prefill/decode 无 --cache-report，仅有 /metrics 统计段（如服务端支持）。
 
-用法:
+CSV 列根据框架条件化生成：
+  SGLang: L1命中率 / L2命中率 / L3命中率（HiCache 分层，L1=device/GPU, L2=host/CPU, L3=storage/DFKV）
+  vLLM:   L1命中率（单层 prefix cache，无 L2/L3）
+
+  用法:
   python3 collect_results.py --report-dir ./sglang_reports/model_name/YYYYMMDD_HHMMSS \
       --model-name glm-5.2-fp8 --framework sglang --chip-type H100 \
       --out results.csv
@@ -25,16 +36,25 @@ import sys
 
 # ---------------------------------------------------------------- CSV 列定义
 
-def csv_columns(chip_type):
-    """根据芯片类型生成 CSV 表头列名。"""
+def csv_columns(chip_type, framework=""):
+    """根据芯片类型和框架生成 CSV 表头列名。
+
+    SGLang: L1命中率/L2命中率/L3命中率（HiCache 分层，含 L1-GPU/L2-CPU/L3-DFKV）
+    vLLM:   缓存命中率（无分层，仅总命中率）
+    """
     ct = chip_type or "芯片类型"
-    return [
+    base = [
         "模型名称",
         "推理框架",
         "输入长度",
         "输出长度",
         "并发数",
-        "Prefix Cache命中率",
+    ]
+    if framework == "sglang":
+        cache_cols = ["L1命中率", "L2命中率", "L3命中率"]
+    else:
+        cache_cols = ["L1命中率"]
+    perf_cols = [
         f"输入token吞吐量_{ct} (toks/s)",
         f"输出token吞吐量_{ct} (toks/s)",
         f"总token吞吐量_{ct} (toks/s)",
@@ -42,6 +62,7 @@ def csv_columns(chip_type):
         f"P99 TTFT_{ct} (ms)",
         f"Mean TPOT_{ct} (ms)",
     ]
+    return base + cache_cols + perf_cols
 
 
 # ---------------------------------------------------------------- 文件名解析
@@ -50,12 +71,13 @@ def parse_filename(fname):
     """从日志文件名提取 (test_type, input_len, output_len, concurrency, cache_hit_rate_pct)。
 
     返回 None 表示无法识别的文件名。
-    cache_hit_rate_pct 为 Prefix Cache 命中率百分比整数（0~100）。
+    cache_hit_rate_pct 为 Prefix Cache 命中率百分比整数（0~100）；
+    benchmark 类型返回 None，表示命中率从日志内容实测（见 parse_log_content）。
     """
     # benchmark: bench_bs-{N}_input_len-{IL}-output_len-{OL}.log
     m = re.match(r'bench_bs-(\d+)_input_len-(\d+)-output_len-(\d+)\.log$', fname)
     if m:
-        return "benchmark", int(m.group(2)), int(m.group(3)), int(m.group(1)), 0
+        return "benchmark", int(m.group(2)), int(m.group(3)), int(m.group(1)), None
 
     # prefill: prefill_bs-{N}_input-{IL}.log
     m = re.match(r'prefill_bs-(\d+)_input-(\d+)\.log$', fname)
@@ -108,6 +130,20 @@ PATTERNS = {
     "benchmark_duration": re.compile(
         r'(?:Benchmark duration|测试持续时间)\s*[\（(]s[\）)]\s*:\s*([\d.]+)',
         re.IGNORECASE),
+    # 前缀缓存命中率实测值（取最后一个匹配：/metrics 差值覆盖 --cache-report 的 L1 值）
+    "cache_hit_rate": re.compile(
+        r'Cache hit rate:\s*([\d.]+)\s*%',
+        re.IGNORECASE),
+    # SGLang HiCache 分层命中率（L1=device/GPU, L2=host/CPU, L3=storage/DFKV）
+    "l1_hit_rate": re.compile(
+        r'L1 cache hit rate \(device\):\s*([\d.]+)\s*%',
+        re.IGNORECASE),
+    "l2_hit_rate": re.compile(
+        r'L2 cache hit rate \(host\):\s*([\d.]+)\s*%',
+        re.IGNORECASE),
+    "l3_hit_rate": re.compile(
+        r'L3 cache hit rate \(storage\):\s*([\d.]+)\s*%',
+        re.IGNORECASE),
 }
 
 
@@ -120,6 +156,10 @@ def parse_log_content(filepath):
         "mean_ttft": "",
         "p99_ttft": "",
         "mean_tpot": "",
+        "cache_hit_rate": None,
+        "l1_hit_rate": None,
+        "l2_hit_rate": None,
+        "l3_hit_rate": None,
     }
     try:
         with open(filepath, encoding="utf-8", errors="replace") as f:
@@ -129,6 +169,12 @@ def parse_log_content(filepath):
         return metrics
 
     for key, pat in PATTERNS.items():
+        if key in ("cache_hit_rate", "l1_hit_rate", "l2_hit_rate", "l3_hit_rate"):
+            # 取最后一个匹配：/metrics 差值统计附加在日志末尾，覆盖 --cache-report 的 L1 值
+            matches = pat.findall(text)
+            if matches:
+                metrics[key] = float(matches[-1])
+            continue
         m = pat.search(text)
         if m:
             val = float(m.group(1))
@@ -174,20 +220,37 @@ def scan_dir(report_dir, model_name, framework):
             test_type, input_len, output_len, concurrency, cache_hit_rate = parsed
             filepath = os.path.join(root, fname)
             metrics = parse_log_content(filepath)
-            rows.append({
+            measured = metrics["cache_hit_rate"]
+            if cache_hit_rate is None:
+                # benchmark 类型：取日志中实测的前缀缓存命中率，旧日志无数据时记 N/A
+                hit_rate = f"{measured:.1f}%" if measured is not None else "N/A"
+            else:
+                # cache/prefill/decode 类型：优先取日志中实测命中率，
+                # 日志无数据时回退到文件名中的指定命中率
+                if measured is not None:
+                    hit_rate = f"{measured:.1f}% (spec={cache_hit_rate}%)"
+                else:
+                    hit_rate = f"{cache_hit_rate}%"
+            row = {
                 "模型名称": model_name,
                 "推理框架": framework,
                 "输入长度": input_len,
                 "输出长度": output_len,
                 "并发数": concurrency,
-                "Prefix Cache命中率": f"{cache_hit_rate}%",
                 "输入token吞吐量": metrics["input_throughput"],
                 "输出token吞吐量": metrics["output_throughput"],
                 "总token吞吐量": metrics["total_throughput"],
                 "Mean TTFT": metrics["mean_ttft"],
                 "P99 TTFT": metrics["p99_ttft"],
                 "Mean TPOT": metrics["mean_tpot"],
-            })
+            }
+            if framework == "sglang":
+                row["L1命中率"] = f"{metrics['l1_hit_rate']:.1f}%" if metrics["l1_hit_rate"] is not None else "N/A"
+                row["L2命中率"] = f"{metrics['l2_hit_rate']:.1f}%" if metrics["l2_hit_rate"] is not None else "N/A"
+                row["L3命中率"] = f"{metrics['l3_hit_rate']:.1f}%" if metrics["l3_hit_rate"] is not None else "N/A"
+            else:
+                row["L1命中率"] = hit_rate
+            rows.append(row)
     return rows, skipped
 
 
@@ -220,25 +283,32 @@ def main():
         print("[WARN] 未在 %s 中找到任何测试日志" % args.report_dir, file=sys.stderr)
         sys.exit(0)
 
-    # 排序：按输入长度 → 输出长度 → Prefix Cache命中率 → 并发数
-    rows.sort(key=lambda r: (r["输入长度"], r["输出长度"], r["Prefix Cache命中率"], r["并发数"]))
+    # 排序：按输入长度 → 输出长度 → 并发数
+    rows.sort(key=lambda r: (r["输入长度"], r["输出长度"], r["并发数"]))
 
     outdir = os.path.dirname(os.path.abspath(args.out))
     if outdir:
         os.makedirs(outdir, exist_ok=True)
 
-    cols = csv_columns(args.chip_type)
+    cols = csv_columns(args.chip_type, args.framework)
+    if args.framework == "sglang":
+        cache_cols = ["L1命中率", "L2命中率", "L3命中率"]
+    else:
+        cache_cols = ["L1命中率"]
     with open(args.out, "w", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f)
         w.writerow(cols)
         for r in rows:
-            w.writerow([
+            row_vals = [
                 r["模型名称"],
                 r["推理框架"],
                 r["输入长度"],
                 r["输出长度"],
                 r["并发数"],
-                r["Prefix Cache命中率"],
+            ]
+            for ck in cache_cols:
+                row_vals.append(r.get(ck, ""))
+            row_vals.extend([
                 r["输入token吞吐量"],
                 r["输出token吞吐量"],
                 r["总token吞吐量"],
@@ -246,6 +316,7 @@ def main():
                 r["P99 TTFT"],
                 r["Mean TPOT"],
             ])
+            w.writerow(row_vals)
 
     print("已收集 %d 条测试结果 → %s" % (len(rows), args.out), file=sys.stderr)
     if skipped:

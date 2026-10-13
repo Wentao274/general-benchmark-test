@@ -15,8 +15,10 @@ set -euo pipefail
 #   4. 默认后台执行（自动 nohup + 日志重定向），-f/--foreground 切前台
 #   5. 并发数和 IO 组合可通过参数覆盖
 #   6. 测试结束后自动调用 collect_results.py 生成汇总 CSV
-#   7. 实测前缀缓存命中率并写入报告（SGLang: --cache-report；
-#      vLLM: 测试前后查询服务端 /metrics 的 vllm:prefix_cache_* 计数器取差值）
+#   7. 实测前缀缓存命中率并写入报告
+#      SGLang: --cache-report (L1/radix) + /metrics 的 prefill_effective_tokens_total
+#              计数器差值（含 HiCache L1/L2/L3），后者覆盖前者
+#      vLLM:   测试前后查询服务端 /metrics 的 vllm:prefix_cache_* 计数器取差值
 # ============================================================
 
 # --- 默认配置 ---
@@ -305,6 +307,111 @@ append_vllm_cache_report() {
   echo ">>> Prefix cache hit rate: ${rate}% (hits ${h_delta} / queries ${q_delta} tokens)"
 }
 
+# --- SGLang: 从服务端 /metrics 提取 prefill_effective_tokens_total 计数器（token 数，跨 rank 求和） ---
+# 输出 "<input> <device_hit> <host_hit> <storage_hit>"；/metrics 不可用或无该指标时输出 "N/A"
+# mode=input → 需要计算 prefill 的 token 数（缓存未命中）
+# mode=device_hit → L1 (GPU) 缓存命中
+# mode=host_hit   → L2 (CPU) 缓存命中
+# mode=storage_hit → L3 (DFKV) 缓存命中
+get_sglang_cache_counters() {
+  curl -s --max-time 10 "$BASE_URL/metrics" 2>/dev/null | awk '
+    function val(line,   s, a) {
+      s = line
+      sub(/\{.*\}/, "", s)           # 去掉 label（防 label 值含空格）
+      sub(/^[^ \t]*[ \t]*/, "", s)   # 去掉指标名，剩余为数值
+      if (s == "") return 0
+      split(s, a, /[ \t]+/)
+      return a[1] + 0
+    }
+    /^sglang:prefill_effective_tokens_total\{/ && /mode="input"/        { inp += val($0); found = 1 }
+    /^sglang:prefill_effective_tokens_total\{/ && /mode="device_hit"/   { dev += val($0); found = 1 }
+    /^sglang:prefill_effective_tokens_total\{/ && /mode="host_hit"/     { host += val($0); found = 1 }
+    /^sglang:prefill_effective_tokens_total\{/ && /mode="storage_hit"/  { stor += val($0); found = 1 }
+    END {
+      if (found) printf "%d %d %d %d", inp, dev, host, stor
+      else print "N/A"
+    }
+  ' || true
+}
+
+# --- SGLang: 等待计数器稳定（服务端统计有刷新延迟），输出稳定值 ---
+wait_sglang_cache_counters() {
+  local prev cur i
+  prev="$(get_sglang_cache_counters)"
+  for i in 1 2 3 4 5 6; do
+    sleep 5
+    cur="$(get_sglang_cache_counters)"
+    [[ "$cur" == "$prev" ]] && break
+    prev="$cur"
+  done
+  echo "$prev"
+}
+
+# --- SGLang: 用测试前后计数器差值计算真实命中率（含 HiCache L1/L2/L3），附加到 bench 日志 ---
+# 输出格式与 vLLM 的 append_vllm_cache_report 对齐（"Cache hit rate:" 行），便于统一解析
+append_sglang_cache_report() {
+  local log_file="$1" before="$2"
+  local after inp_b dev_b host_b stor_b inp_a dev_a host_a stor_a
+  local inp_d dev_d host_d stor_d total_hit total_all rate
+
+  after="$(wait_sglang_cache_counters)"
+
+  if [[ "$before" == "N/A" || "$after" == "N/A" ]]; then
+    echo ">>> [WARN] 无法从 ${BASE_URL}/metrics 获取 SGLang 缓存计数器，本组命中率记为 N/A"
+    {
+      echo ""
+      echo "--------------- Prefix Cache Hit Details (SGLang /metrics) ---------------"
+      echo "Cache hit rate:                       N/A (sglang prefill_effective_tokens_total unavailable from server /metrics)"
+    } >> "$log_file"
+    return
+  fi
+
+  read -r inp_b dev_b host_b stor_b <<< "$before" || true
+  read -r inp_a dev_a host_a stor_a <<< "$after" || true
+
+  inp_d=$(( inp_a - inp_b ))
+  dev_d=$(( dev_a - dev_b ))
+  host_d=$(( host_a - host_b ))
+  stor_d=$(( stor_a - stor_b ))
+  total_hit=$(( dev_d + host_d + stor_d ))
+  total_all=$(( inp_d + total_hit ))
+
+  if [[ "$total_all" -le 0 ]]; then
+    {
+      echo ""
+      echo "--------------- Prefix Cache Hit Details (SGLang /metrics) ---------------"
+      echo "Prefill effective tokens (input):     0"
+      echo "Total cache hit tokens:               0"
+      echo "Total prefill tokens:                 0"
+      echo "Cache hit rate:                       0.0% (server reported no prefill activity)"
+      echo "L1 cache hit rate (device):           0.0%"
+      echo "L2 cache hit rate (host):             0.0%"
+      echo "L3 cache hit rate (storage):          0.0%"
+    } >> "$log_file"
+    return
+  fi
+
+  rate=$(awk -v h="$total_hit" -v a="$total_all" 'BEGIN { printf "%.1f", h * 100 / a }')
+  l1_rate=$(awk -v h="$dev_d" -v a="$total_all" 'BEGIN { printf "%.1f", h * 100 / a }')
+  l2_rate=$(awk -v h="$host_d" -v a="$total_all" 'BEGIN { printf "%.1f", h * 100 / a }')
+  l3_rate=$(awk -v h="$stor_d" -v a="$total_all" 'BEGIN { printf "%.1f", h * 100 / a }')
+  {
+    echo ""
+    echo "--------------- Prefix Cache Hit Details (SGLang /metrics) ---------------"
+    echo "Prefill effective tokens (input):     ${inp_d}"
+    echo "Cache hit tokens (L1 device):         ${dev_d}"
+    echo "Cache hit tokens (L2 host):           ${host_d}"
+    echo "Cache hit tokens (L3 storage):        ${stor_d}"
+    echo "Total cache hit tokens:               ${total_hit}"
+    echo "Total prefill tokens:                 ${total_all}"
+    echo "Cache hit rate:                       ${rate}%"
+    echo "L1 cache hit rate (device):           ${l1_rate}%"
+    echo "L2 cache hit rate (host):             ${l2_rate}%"
+    echo "L3 cache hit rate (storage):          ${l3_rate}%"
+  } >> "$log_file"
+  echo ">>> SGLang /metrics cache hit rate: ${rate}% (L1=${l1_rate}% L2=${l2_rate}% L3=${l3_rate}%, hits ${total_hit} / total ${total_all} tokens)"
+}
+
 echo "=========================================="
 echo "=== Starting ${BENCH_LABEL} Benchmark Suite ==="
 echo "=== Framework:    $FRAMEWORK"
@@ -364,9 +471,11 @@ for concurrency in "${concurrency_list[@]}"; do
     echo ">>> Running test: Input=$input_len, Output=$output_len, Concurrency=$concurrency"
     echo ">>> Log file: $log_file"
 
-    # --- vllm: 测试前抓取服务端前缀缓存计数器（与测试后差值计算真实命中率） ---
+    # --- 测试前抓取服务端前缀缓存计数器（与测试后差值计算真实命中率） ---
     if [[ "$FRAMEWORK" == "vllm" ]]; then
       vllm_pc_before="$(wait_vllm_prefix_cache_counters)"
+    elif [[ "$FRAMEWORK" == "sglang" ]]; then
+      sglang_pc_before="$(wait_sglang_cache_counters)"
     fi
 
     # --- 根据框架选择对应的 bench 命令 ---
@@ -426,9 +535,14 @@ for concurrency in "${concurrency_list[@]}"; do
         FAIL_COUNT=$((FAIL_COUNT + 1))
       else
         echo ">>> Success. Results saved to: $log_file"
-        # --- vllm: 计算真实前缀缓存命中率并附加到日志（供 collect_results.py 解析） ---
+        # --- 计算真实前缀缓存命中率并附加到日志（供 collect_results.py 解析） ---
+        # SGLang: /metrics 的 prefill_effective_tokens_total 计数器差值（含 HiCache L1/L2/L3）
+        #         覆盖 --cache-report 仅统计 L1 (radix cache) 的局限性
+        # vLLM:   /metrics 的 vllm:prefix_cache_* 计数器差值
         if [[ "$FRAMEWORK" == "vllm" ]]; then
           append_vllm_cache_report "$log_file" "$vllm_pc_before"
+        elif [[ "$FRAMEWORK" == "sglang" ]]; then
+          append_sglang_cache_report "$log_file" "$sglang_pc_before"
         fi
       fi
     fi
@@ -459,6 +573,8 @@ IO_QUOTED="${IO_QUOTED% }"
 if [[ "$FRAMEWORK" == "sglang" ]]; then
   BENCH_COMMANDS="# 并发数列表: ${CONCURRENCY_STR}
 # IO 组合: ${IO_STR}
+# 注: 脚本在每组测试前后查询服务端 /metrics 的 sglang:prefill_effective_tokens_total
+#     计数器，差值计算真实前缀缓存命中率（含 HiCache L1/L2/L3）并写入日志
 for CONCURRENCY in ${CONC_LIST}; do
   NUM_PROMPTS=\$CONCURRENCY
   for IO in ${IO_QUOTED}; do

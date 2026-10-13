@@ -41,12 +41,16 @@ general-benchmark-test/
 
 原因：本脚本用固定 seed 生成随机数据集——重复执行、以及同一轮内不同并发档（num_prompts 递增时 prompt 集合嵌套）都会产生相同请求。若服务端开启前缀缓存，会产生跨轮/轮内缓存命中，吞吐虚高且冷热轮结果不可比。
 
-**脚本会自动实测前缀缓存命中率并写入报告**（不是固定 0%）：
+**脚本会自动实测缓存命中率并写入报告**（不是固定 0%）：
 
-- SGLang：bench 命令自动加 `--cache-report`，从请求响应统计真实命中的 token 数
-- vLLM：每组测试前后查询服务端 `/metrics` 的 `vllm:prefix_cache_queries` / `vllm:prefix_cache_hits` 计数器，差值计算命中率
+- **SGLang**：每组测试前后查询服务端 `/metrics` 的 `sglang:prefill_effective_tokens_total` 计数器（跨 rank 求和），差值计算 HiCache 三层命中率：
+  - `L1命中率`（device_hit，GPU 缓存）
+  - `L2命中率`（host_hit，CPU 缓存）
+  - `L3命中率`（storage_hit，DFKV 存储）
+  - 三层命中率之和 = 总命中率；`--cache-report` 仅统计 L1（radix cache），`/metrics` 覆盖完整 HiCache 层级
+- **vLLM**：每组测试前后查询服务端 `/metrics` 的 `vllm:prefix_cache_queries` / `vllm:prefix_cache_hits` 计数器，差值计算单层命中率（`L1命中率`）
 
-服务端确实关闭缓存时，报告中该列应为 `0%`；若明显大于 0%，说明服务端未按要求关闭缓存，结果不可比（显示 `N/A` 表示无法访问服务端 `/metrics`，未采集到）。
+服务端确实关闭缓存时，报告中命中率应为 `0%`；若明显大于 0%，说明服务端未按要求关闭缓存，结果不可比（显示 `N/A` 表示无法访问服务端 `/metrics`，未采集到）。
 
 ```bash
 # SGLang — 加 --disable-radix-cache
@@ -385,7 +389,7 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 - **输入/输出/总吞吐量** = `Input/Output/Total token throughput (tok/s)`
 - **Mean TTFT** = `Mean TTFT (ms)`（命中率越高，每请求 prefill 量越少，TTFT 越低且分布均匀）
 - **Mean TPOT** = `Mean TPOT (ms)`
-- SGLang 额外输出 `--cache-report` 实际缓存命中统计，可验证命中率是否符合预期
+- SGLang 从 `/metrics` 提取 HiCache L1/L2/L3 三层命中率（`--cache-report` 仅覆盖 L1/radix，可对照验证）
 
 ---
 
@@ -468,7 +472,7 @@ python3 _scripts/csv_to_md.py \
 | **数据集** | `random-ids`/`random` | 同左 | `generated-shared-prefix`/`prefix_repetition` | 同左 |
 | **num_prompts** | = 并发数 | = 5×并发数 | = 10×并发数 | N_total = 5×并发数 |
 | **核心指标** | 输入/输出/总吞吐量、TTFT、TPOT | prefill 吞吐量、TTFT | decode 吞吐量、TPOT | 输入/输出/总吞吐量、TTFT、TPOT |
-| **命中率列** | 实测（关缓存时应为 0%） | 0% | 100% | 指定值（`-R`） |
+| **命中率列** | 实测（关缓存时应为 0%） | 0% | 100% | 实测（SGLang `/metrics` 三层 L1/L2/L3 / vLLM `/metrics` 单层 L1），无数据时回退到指定值（`-R`） |
 | **超时保护** | `--timeout`（默认 3600s） | 同左 | 同左 | 同左 |
 
 > 四种脚本均支持 `--timeout`（默认 3600 秒）、容错跳过、失败后继续执行并生成部分报告。详见各脚本 `--help`。

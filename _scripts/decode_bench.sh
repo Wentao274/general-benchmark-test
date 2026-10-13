@@ -22,6 +22,8 @@ set -euo pipefail
 # 前置条件：服务端必须开启前缀缓存
 #   SGLang: 默认开启（不要加 --disable-radix-cache）
 #   vLLM:   默认开启（不要加 --no-enable-prefix-caching）
+# 缓存验证：测试前后查询 /metrics 计数器，实测命中率应 ≈100%
+#   （若远低于 100% 说明缓存未生效，decode 结果被 prefill 开销污染）
 # ============================================================
 
 # --- 默认配置 ---
@@ -271,6 +273,173 @@ check_log_errors() {
 
 FAIL_COUNT=0
 
+# ============================================================
+# 前缀缓存命中率实测（/metrics 计数器差值法）
+#   验证服务端缓存命中是否生效（预期 ~100%）
+#   vLLM:   vllm:prefix_cache_queries / vllm:prefix_cache_hits
+#   SGLang: sglang:prefill_effective_tokens_total (mode=input/device_hit/host_hit/storage_hit)
+#           含 HiCache L1(GPU) / L2(CPU) / L3(DFKV) 全层命中统计
+# ============================================================
+
+get_vllm_prefix_cache_counters() {
+  curl -s --max-time 10 "$BASE_URL/metrics" 2>/dev/null | awk '
+    function val(line,   s, a) {
+      s = line
+      sub(/\{.*\}/, "", s)
+      sub(/^[^ \t]*[ \t]*/, "", s)
+      if (s == "") return 0
+      split(s, a, /[ \t]+/)
+      return a[1] + 0
+    }
+    /^vllm:(gpu_)?prefix_cache_queries(_total)?[ \t{]/ { q += val($0); found = 1 }
+    /^vllm:(gpu_)?prefix_cache_hits(_total)?[ \t{]/    { h += val($0); found = 1 }
+    END {
+      if (found) printf "%d %d", q, h
+      else print "N/A"
+    }
+  ' || true
+}
+
+wait_vllm_prefix_cache_counters() {
+  local prev cur i
+  prev="$(get_vllm_prefix_cache_counters)"
+  for i in 1 2 3 4 5 6; do
+    sleep 5
+    cur="$(get_vllm_prefix_cache_counters)"
+    [[ "$cur" == "$prev" ]] && break
+    prev="$cur"
+  done
+  echo "$prev"
+}
+
+append_vllm_cache_report() {
+  local log_file="$1" before="$2"
+  local after q_before h_before q_after h_after q_delta h_delta rate
+  after="$(wait_vllm_prefix_cache_counters)"
+  if [[ "$before" == "N/A" || "$after" == "N/A" ]]; then
+    echo ">>> [WARN] 无法从 ${BASE_URL}/metrics 获取前缀缓存计数器，本组命中率记为 N/A"
+    {
+      echo ""
+      echo "--------------- Prefix Cache Hit Details ---------------"
+      echo "Cache hit rate:                       N/A (prefix cache counters unavailable from server /metrics)"
+    } >> "$log_file"
+    return
+  fi
+  read -r q_before h_before <<< "$before" || true
+  read -r q_after h_after <<< "$after" || true
+  q_delta=$(( q_after - q_before ))
+  h_delta=$(( h_after - h_before ))
+  if [[ "$q_delta" -le 0 ]]; then
+    {
+      echo ""
+      echo "--------------- Prefix Cache Hit Details ---------------"
+      echo "Prefix cache queries (tokens):        0"
+      echo "Prefix cache hits (tokens):           0"
+      echo "Cache hit rate:                       0.0% (server reported no prefix cache activity)"
+    } >> "$log_file"
+    return
+  fi
+  rate=$(awk -v h="$h_delta" -v q="$q_delta" 'BEGIN { printf "%.1f", h * 100 / q }')
+  {
+    echo ""
+    echo "--------------- Prefix Cache Hit Details ---------------"
+    echo "Prefix cache queries (tokens):        ${q_delta}"
+    echo "Prefix cache hits (tokens):           ${h_delta}"
+    echo "Cache hit rate:                       ${rate}%"
+  } >> "$log_file"
+  echo ">>> Prefix cache hit rate: ${rate}% (hits ${h_delta} / queries ${q_delta} tokens)"
+}
+
+get_sglang_cache_counters() {
+  curl -s --max-time 10 "$BASE_URL/metrics" 2>/dev/null | awk '
+    function val(line,   s, a) {
+      s = line
+      sub(/\{.*\}/, "", s)
+      sub(/^[^ \t]*[ \t]*/, "", s)
+      if (s == "") return 0
+      split(s, a, /[ \t]+/)
+      return a[1] + 0
+    }
+    /^sglang:prefill_effective_tokens_total\{/ && /mode="input"/        { inp += val($0); found = 1 }
+    /^sglang:prefill_effective_tokens_total\{/ && /mode="device_hit"/   { dev += val($0); found = 1 }
+    /^sglang:prefill_effective_tokens_total\{/ && /mode="host_hit"/     { host += val($0); found = 1 }
+    /^sglang:prefill_effective_tokens_total\{/ && /mode="storage_hit"/  { stor += val($0); found = 1 }
+    END {
+      if (found) printf "%d %d %d %d", inp, dev, host, stor
+      else print "N/A"
+    }
+  ' || true
+}
+
+wait_sglang_cache_counters() {
+  local prev cur i
+  prev="$(get_sglang_cache_counters)"
+  for i in 1 2 3 4 5 6; do
+    sleep 5
+    cur="$(get_sglang_cache_counters)"
+    [[ "$cur" == "$prev" ]] && break
+    prev="$cur"
+  done
+  echo "$prev"
+}
+
+append_sglang_cache_report() {
+  local log_file="$1" before="$2"
+  local after inp_b dev_b host_b stor_b inp_a dev_a host_a stor_a
+  local inp_d dev_d host_d stor_d total_hit total_all rate
+  after="$(wait_sglang_cache_counters)"
+  if [[ "$before" == "N/A" || "$after" == "N/A" ]]; then
+    echo ">>> [WARN] 无法从 ${BASE_URL}/metrics 获取 SGLang 缓存计数器，本组命中率记为 N/A"
+    {
+      echo ""
+      echo "--------------- Prefix Cache Hit Details (SGLang /metrics) ---------------"
+      echo "Cache hit rate:                       N/A (sglang prefill_effective_tokens_total unavailable from server /metrics)"
+    } >> "$log_file"
+    return
+  fi
+  read -r inp_b dev_b host_b stor_b <<< "$before" || true
+  read -r inp_a dev_a host_a stor_a <<< "$after" || true
+  inp_d=$(( inp_a - inp_b ))
+  dev_d=$(( dev_a - dev_b ))
+  host_d=$(( host_a - host_b ))
+  stor_d=$(( stor_a - stor_b ))
+  total_hit=$(( dev_d + host_d + stor_d ))
+  total_all=$(( inp_d + total_hit ))
+  if [[ "$total_all" -le 0 ]]; then
+    {
+      echo ""
+      echo "--------------- Prefix Cache Hit Details (SGLang /metrics) ---------------"
+      echo "Prefill effective tokens (input):     0"
+      echo "Total cache hit tokens:               0"
+      echo "Total prefill tokens:                 0"
+      echo "Cache hit rate:                       0.0% (server reported no prefill activity)"
+      echo "L1 cache hit rate (device):           0.0%"
+      echo "L2 cache hit rate (host):             0.0%"
+      echo "L3 cache hit rate (storage):          0.0%"
+    } >> "$log_file"
+    return
+  fi
+  rate=$(awk -v h="$total_hit" -v a="$total_all" 'BEGIN { printf "%.1f", h * 100 / a }')
+  l1_rate=$(awk -v h="$dev_d" -v a="$total_all" 'BEGIN { printf "%.1f", h * 100 / a }')
+  l2_rate=$(awk -v h="$host_d" -v a="$total_all" 'BEGIN { printf "%.1f", h * 100 / a }')
+  l3_rate=$(awk -v h="$stor_d" -v a="$total_all" 'BEGIN { printf "%.1f", h * 100 / a }')
+  {
+    echo ""
+    echo "--------------- Prefix Cache Hit Details (SGLang /metrics) ---------------"
+    echo "Prefill effective tokens (input):     ${inp_d}"
+    echo "Cache hit tokens (L1 device):         ${dev_d}"
+    echo "Cache hit tokens (L2 host):           ${host_d}"
+    echo "Cache hit tokens (L3 storage):        ${stor_d}"
+    echo "Total cache hit tokens:               ${total_hit}"
+    echo "Total prefill tokens:                 ${total_all}"
+    echo "Cache hit rate:                       ${rate}%"
+    echo "L1 cache hit rate (device):           ${l1_rate}%"
+    echo "L2 cache hit rate (host):             ${l2_rate}%"
+    echo "L3 cache hit rate (storage):          ${l3_rate}%"
+  } >> "$log_file"
+  echo ">>> SGLang /metrics cache hit rate: ${rate}% (L1=${l1_rate}% L2=${l2_rate}% L3=${l3_rate}%, hits ${total_hit} / total ${total_all} tokens)"
+}
+
 for prefix_len in "${prefix_lens[@]}"; do
   for output_len in "${output_lens[@]}"; do
     for concurrency in "${concurrency_list[@]}"; do
@@ -281,6 +450,13 @@ for prefix_len in "${prefix_lens[@]}"; do
       echo ""
       echo ">>> Decode: Prefix=$prefix_len, Output=$output_len, Concurrency=$concurrency, NumPrompts=$num_prompts"
       echo ">>> Log file: $log_file"
+
+      # --- 测试前抓取服务端前缀缓存计数器（验证缓存命中，预期 ~100%） ---
+      if [[ "$FRAMEWORK" == "vllm" ]]; then
+        cache_pc_before="$(wait_vllm_prefix_cache_counters)"
+      elif [[ "$FRAMEWORK" == "sglang" ]]; then
+        cache_pc_before="$(wait_sglang_cache_counters)"
+      fi
 
       set +e
       if [[ "$FRAMEWORK" == "sglang" ]]; then
@@ -341,6 +517,12 @@ for prefix_len in "${prefix_lens[@]}"; do
           FAIL_COUNT=$((FAIL_COUNT + 1))
         else
           echo ">>> Success. Results saved to: $log_file"
+          # --- 实测前缀缓存命中率，验证缓存命中生效（预期 ~100%） ---
+          if [[ "$FRAMEWORK" == "vllm" ]]; then
+            append_vllm_cache_report "$log_file" "$cache_pc_before"
+          elif [[ "$FRAMEWORK" == "sglang" ]]; then
+            append_sglang_cache_report "$log_file" "$cache_pc_before"
+          fi
         fi
       fi
       echo "--- Finished Prefix=$prefix_len, Output=$output_len. Sleeping for $SLEEP_TIME seconds... ---"

@@ -53,21 +53,28 @@
 
 **测试矩阵**：7 个并发级别 × 3 个 IO 组合 = **21 组测试**（每个框架）。
 
-> **前缀缓存注意事项（服务端必须关闭前缀缓存）**：固定 seed + 随机数据集意味着**重复执行**、以及**同一轮内不同并发档**（num_prompts 递增时 prompt 集合嵌套）会产生相同请求；若服务端开启前缀缓存，会产生跨轮/轮内缓存命中，吞吐虚高、冷热轮结果不可比。因此服务端部署时必须关闭前缀缓存（SGLang `--disable-radix-cache` / vLLM `--no-enable-prefix-caching`，见 [1.7 部署建议](#17-部署建议)）。测试脚本会**实测**前缀缓存命中率并填入结果表（SGLang `--cache-report` / vLLM 服务端 `/metrics` 计数器差值）：服务端按要求关闭缓存时应为 `0%`；若明显大于 0%，说明服务端未关闭前缀缓存，本组结果无效，需检查部署命令后重测。
+> **前缀缓存注意事项（服务端必须关闭前缀缓存）**：固定 seed + 随机数据集意味着**重复执行**、以及**同一轮内不同并发档**（num_prompts 递增时 prompt 集合嵌套）会产生相同请求；若服务端开启前缀缓存，会产生跨轮/轮内缓存命中，吞吐虚高、冷热轮结果不可比。因此服务端部署时必须关闭前缀缓存（SGLang `--disable-radix-cache` / vLLM `--no-enable-prefix-caching`，见 [1.7 部署建议](#17-部署建议)）。测试脚本会**实测**缓存命中率并填入结果表（SGLang 查询服务端 `/metrics` 的 `sglang:prefill_effective_tokens_total` 计数器，计算 HiCache L1/L2/L3 三层命中率；vLLM 查询 `/metrics` 的 `vllm:prefix_cache_*` 计数器，计算单层命中率）：服务端按要求关闭缓存时应为 `0%`；若明显大于 0%，说明服务端未关闭前缀缓存，本组结果无效，需检查部署命令后重测。
 
 ### 1.3 测试结果表
 
 测试完成后，将每组结果汇总至下表（CSV 由脚本自动收集生成）。`<芯片类型>` 替换为实际被测芯片型号（如 H100、B200、MTT S80 等）。
 
-> **Prefix Cache 命中率为脚本实测值**（非固定 0%）：服务端按要求关闭前缀缓存时应为 `0%`；若明显大于 0%，说明服务端未关闭缓存，本组结果无效（详见 [1.2 测试参数](#12-测试参数)的缓存注意事项）。
+> **缓存命中率为脚本实测值**（非固定 0%）：SGLang 从服务端 `/metrics` 提取 HiCache 三层命中率（L1/L2/L3），vLLM 从 `/metrics` 提取单层命中率（L1）。服务端按要求关闭前缀缓存时应为 `0%`；若明显大于 0%，说明服务端未关闭缓存，本组结果无效（详见 [1.2 测试参数](#12-测试参数)的缓存注意事项）。
 
-| 模型名称 | 推理框架 | 输入长度 | 输出长度 | 并发数 | Prefix Cache命中率 | 输入token吞吐量\_\<芯片类型\> (toks/s) | 输出token吞吐量\_\<芯片类型\> (toks/s) | 总token吞吐量\_\<芯片类型\> (toks/s) | Mean TTFT\_\<芯片类型\> (ms) | P99 TTFT\_\<芯片类型\> (ms) | Mean TPOT\_\<芯片类型\> (ms) |
+> **CSV 列按框架条件化**：SGLang 报告含 `L1命中率`、`L2命中率`、`L3命中率` 三列；vLLM 报告仅含 `L1命中率` 一列。以下表格展示 SGLang 格式（vLLM 无 L2/L3 列）。
+
+| 模型名称 | 推理框架 | 输入长度 | 输出长度 | 并发数 | L1命中率 | L2命中率 | L3命中率 | 输入token吞吐量\_\<芯片类型\> (toks/s) | 输出token吞吐量\_\<芯片类型\> (toks/s) | 总token吞吐量\_\<芯片类型\> (toks/s) | Mean TTFT\_\<芯片类型\> (ms) | P99 TTFT\_\<芯片类型\> (ms) | Mean TPOT\_\<芯片类型\> (ms) |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| \<模型名\> | sglang | 8192 | 512 | 1 | 0.0% | 0.0% | 0.0% | | | | | | |
+| \<模型名\> | sglang | 8192 | 512 | 4 | 0.0% | 0.0% | 0.0% | | | | | | |
+| \<模型名\> | sglang | 8192 | 512 | 8 | 0.0% | 0.0% | 0.0% | | | | | | |
+| ... | ... | ... | ... | ... | ... | ... | ... | | | | | | |
+| \<模型名\> | sglang | 65536 | 512 | 128 | 0.0% | 0.0% | 0.0% | | | | | | |
+
+> vLLM 格式（无 L2/L3 列）：
+
+| 模型名称 | 推理框架 | 输入长度 | 输出长度 | 并发数 | L1命中率 | 输入token吞吐量\_\<芯片类型\> (toks/s) | 输出token吞吐量\_\<芯片类型\> (toks/s) | 总token吞吐量\_\<芯片类型\> (toks/s) | Mean TTFT\_\<芯片类型\> (ms) | P99 TTFT\_\<芯片类型\> (ms) | Mean TPOT\_\<芯片类型\> (ms) |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| \<模型名\> | \<框架\> | 8192 | 512 | 1 | 0.0% | | | | | | |
-| \<模型名\> | \<框架\> | 8192 | 512 | 4 | 0.0% | | | | | | |
-| \<模型名\> | \<框架\> | 8192 | 512 | 8 | 0.0% | | | | | | |
-| ... | ... | ... | ... | ... | ... | | | | | | |
-| \<模型名\> | \<框架\> | 65536 | 512 | 128 | 0.0% | | | | | | |
 
 **填写说明**：
 
@@ -81,7 +88,9 @@
 | **Mean TTFT** | 直接提取 | `Mean TTFT (ms)` |
 | **P99 TTFT** | 直接提取 | `P99 TTFT (ms)` |
 | **Mean TPOT** | 直接提取 | `Mean TPOT (ms)` |
-| **Prefix Cache命中率** | 日志实测（SGLang `--cache-report` 输出 / vLLM `/metrics` 计数器差值，由 `bench.sh` 自动写入日志） | `Cache hit rate:` |
+| **L1命中率** | 日志实测（SGLang `/metrics` 的 `sglang:prefill_effective_tokens_total` 中 `mode="device_hit"` / vLLM `/metrics` 的 `vllm:prefix_cache_*` 计数器差值，由 `bench.sh` 自动写入日志） | `L1 cache hit rate (device):` (SGLang) / `Cache hit rate:` (vLLM) |
+| **L2命中率** | 日志实测（SGLang `/metrics` 的 `mode="host_hit"` 计数器差值；vLLM 无此指标，不输出此列） | `L2 cache hit rate (host):` |
+| **L3命中率** | 日志实测（SGLang `/metrics` 的 `mode="storage_hit"` 计数器差值；vLLM 无此指标，不输出此列） | `L3 cache hit rate (storage):` |
 
 ### 1.4 测试脚本（统一）
 
@@ -95,7 +104,7 @@
 > 5. 并发数和 IO 组合可通过 `-c` / `-i` 参数覆盖
 > 6. 测试结束后自动调用 `collect_results.py` 生成汇总 CSV，再自动调用 `csv_to_md.py` 生成 Markdown 测试报告
 > 7. 通过 `-T/--tester` 指定测试人员，报告目录增加 tester 层级（`{report-dir}/{tester}/{model_name}/{TS}/`），Markdown 报告命名为 `{tester}_{model_name}_{chip_type}_{framework}_{pd}_bench_{TS}.md`
-> 8. 实测前缀缓存命中率并写入报告：SGLang bench 命令自动加 `--cache-report`；vLLM 在每组测试前后查询服务端 `/metrics` 的 `vllm:prefix_cache_*` 计数器取差值，写入日志的 `Cache hit rate:` 行由 `collect_results.py` 解析
+> 8. 实测缓存命中率并写入报告：SGLang 在每组测试前后查询服务端 `/metrics` 的 `sglang:prefill_effective_tokens_total` 计数器（跨 rank 求和），差值计算 HiCache L1/L2/L3 三层命中率（`--cache-report` 仅覆盖 L1/radix，`/metrics` 覆盖完整 HiCache）；vLLM 在每组测试前后查询服务端 `/metrics` 的 `vllm:prefix_cache_*` 计数器取差值，计算单层命中率，写入日志的 `Cache hit rate:` 行由 `collect_results.py` 解析
 
 ```bash
 #!/bin/bash
@@ -115,7 +124,8 @@ set -euo pipefail
 #   4. 默认后台执行（自动 nohup + 日志重定向），-f/--foreground 切前台
 #   5. 并发数和 IO 组合可通过参数覆盖
 #   6. 测试结束后自动调用 collect_results.py 生成汇总 CSV
-#   7. 实测前缀缓存命中率并写入报告（SGLang: --cache-report；
+#   7. 实测缓存命中率并写入报告（SGLang: /metrics 的 sglang:prefill_effective_tokens_total
+#      计数器差值，计算 HiCache L1/L2/L3 三层命中率；
 #      vLLM: 测试前后查询服务端 /metrics 的 vllm:prefix_cache_* 计数器取差值）
 # ============================================================
 
@@ -304,12 +314,14 @@ RUN_DIR="$REPORT_DIR/${TESTER}/${safe_model_name}/${RUN_TS}"
 mkdir -p "$RUN_DIR"
 
 # ============================================================
-# 前缀缓存命中率实测（用于校验服务端是否按要求关闭了前缀缓存）
-#   SGLang: bench 命令加 --cache-report，从请求响应统计真实命中 token 数
-#   vLLM:   bench serve 无缓存统计，改为测试前后查询服务端 /metrics 的
+# 缓存命中率实测（用于校验服务端是否按要求关闭了前缀缓存）
+#   SGLang: 测试前后查询服务端 /metrics 的 sglang:prefill_effective_tokens_total
+#           计数器（跨 rank 求和），差值计算 HiCache L1/L2/L3 三层命中率
+#           （--cache-report 仅覆盖 L1/radix，/metrics 覆盖完整 HiCache）
+#   vLLM:   测试前后查询服务端 /metrics 的
 #           vllm:prefix_cache_queries / vllm:prefix_cache_hits 计数器，
-#           差值即本组测试的查询/命中 token 数
-# 命中率写入 bench 日志（"Cache hit rate:" 行），collect_results.py 解析
+#           差值即本组测试的查询/命中 token 数（单层命中率）
+# 命中率写入 bench 日志（"Cache hit rate:" / "L1/L2/L3 cache hit rate:" 行），collect_results.py 解析
 # ============================================================
 
 # --- vLLM: 从服务端 /metrics 提取前缀缓存计数器（token 数，跨 engine 求和） ---
@@ -347,7 +359,7 @@ wait_vllm_prefix_cache_counters() {
 }
 
 # --- vLLM: 用测试前后计数器差值计算真实命中率，附加到 bench 日志 ---
-# 输出格式与 SGLang --cache-report 对齐（"Cache hit rate:" 行），便于统一解析
+# 输出格式与 SGLang /metrics 报告对齐（"Cache hit rate:" 行），便于统一解析
 append_vllm_cache_report() {
   local log_file="$1" before="$2"
   local after q_before h_before q_after h_after q_delta h_delta rate
@@ -392,6 +404,110 @@ append_vllm_cache_report() {
   echo ">>> Prefix cache hit rate: ${rate}% (hits ${h_delta} / queries ${q_delta} tokens)"
 }
 
+# --- SGLang: 从服务端 /metrics 提取 prefill_effective_tokens_total 计数器（token 数，跨 rank 求和） ---
+# mode=input → 缓存未命中（需 prefill 计算）
+# mode=device_hit → L1 (GPU) 缓存命中
+# mode=host_hit → L2 (CPU) 缓存命中
+# mode=storage_hit → L3 (DFKV) 缓存命中
+# 输出 "<input> <device_hit> <host_hit> <storage_hit>"；/metrics 不可用或无该指标时输出 "N/A"
+get_sglang_cache_counters() {
+  curl -s --max-time 10 "$BASE_URL/metrics" 2>/dev/null | awk '
+    function val(line,   s, a) {
+      s = line
+      sub(/\{.*\}/, "", s)
+      sub(/^[^ \t]*[ \t]*/, "", s)
+      if (s == "") return 0
+      split(s, a, /[ \t]+/)
+      return a[1] + 0
+    }
+    /^sglang:prefill_effective_tokens_total\{/ && /mode="input"/        { inp += val($0); found = 1 }
+    /^sglang:prefill_effective_tokens_total\{/ && /mode="device_hit"/   { dev += val($0); found = 1 }
+    /^sglang:prefill_effective_tokens_total\{/ && /mode="host_hit"/     { host += val($0); found = 1 }
+    /^sglang:prefill_effective_tokens_total\{/ && /mode="storage_hit"/  { stor += val($0); found = 1 }
+    END {
+      if (found) printf "%d %d %d %d", inp, dev, host, stor
+      else print "N/A"
+    }
+  ' || true
+}
+
+# --- SGLang: 等待计数器稳定（服务端统计有刷新延迟），输出稳定值 ---
+wait_sglang_cache_counters() {
+  local prev cur i
+  prev="$(get_sglang_cache_counters)"
+  for i in 1 2 3 4 5 6; do
+    sleep 5
+    cur="$(get_sglang_cache_counters)"
+    [[ "$cur" == "$prev" ]] && break
+    prev="$cur"
+  done
+  echo "$prev"
+}
+
+# --- SGLang: 用测试前后计数器差值计算真实命中率（含 HiCache L1/L2/L3），附加到 bench 日志 ---
+append_sglang_cache_report() {
+  local log_file="$1" before="$2"
+  local after inp_b dev_b host_b stor_b inp_a dev_a host_a stor_a
+  local inp_d dev_d host_d stor_d total_hit total_all rate l1_rate l2_rate l3_rate
+
+  after="$(wait_sglang_cache_counters)"
+
+  if [[ "$before" == "N/A" || "$after" == "N/A" ]]; then
+    echo ">>> [WARN] 无法从 ${BASE_URL}/metrics 获取 SGLang 缓存计数器，本组命中率记为 N/A"
+    {
+      echo ""
+      echo "--------------- Prefix Cache Hit Details (SGLang /metrics) ---------------"
+      echo "Cache hit rate:                       N/A (sglang prefill_effective_tokens_total unavailable)"
+    } >> "$log_file"
+    return
+  fi
+
+  read -r inp_b dev_b host_b stor_b <<< "$before"
+  read -r inp_a dev_a host_a stor_a <<< "$after"
+
+  inp_d=$(( inp_a - inp_b ))
+  dev_d=$(( dev_a - dev_b ))
+  host_d=$(( host_a - host_b ))
+  stor_d=$(( stor_a - stor_b ))
+  total_hit=$(( dev_d + host_d + stor_d ))
+  total_all=$(( inp_d + total_hit ))
+
+  if [[ "$total_all" -le 0 ]]; then
+    {
+      echo ""
+      echo "--------------- Prefix Cache Hit Details (SGLang /metrics) ---------------"
+      echo "Prefill effective tokens (input):     0"
+      echo "Total cache hit tokens:               0"
+      echo "Total prefill tokens:                 0"
+      echo "Cache hit rate:                       0.0% (server reported no prefill activity)"
+      echo "L1 cache hit rate (device):           0.0%"
+      echo "L2 cache hit rate (host):             0.0%"
+      echo "L3 cache hit rate (storage):          0.0%"
+    } >> "$log_file"
+    return
+  fi
+
+  rate=$(awk -v h="$total_hit" -v a="$total_all" 'BEGIN { printf "%.1f", h * 100 / a }')
+  l1_rate=$(awk -v h="$dev_d" -v a="$total_all" 'BEGIN { printf "%.1f", h * 100 / a }')
+  l2_rate=$(awk -v h="$host_d" -v a="$total_all" 'BEGIN { printf "%.1f", h * 100 / a }')
+  l3_rate=$(awk -v h="$stor_d" -v a="$total_all" 'BEGIN { printf "%.1f", h * 100 / a }')
+  {
+    echo ""
+    echo "--------------- Prefix Cache Hit Details (SGLang /metrics) ---------------"
+    echo "Prefill effective tokens (input):     ${inp_d}"
+    echo "Cache hit tokens (L1 device):         ${dev_d}"
+    echo "Cache hit tokens (L2 host):           ${host_d}"
+    echo "Cache hit tokens (L3 storage):        ${stor_d}"
+    echo "Total cache hit tokens:               ${total_hit}"
+    echo "Total prefill tokens:                 ${total_all}"
+    echo "Cache hit rate:                       ${rate}%"
+    echo "L1 cache hit rate (device):           ${l1_rate}%"
+    echo "L2 cache hit rate (host):             ${l2_rate}%"
+    echo "L3 cache hit rate (storage):          ${l3_rate}%"
+  } >> "$log_file"
+  echo ">>> SGLang /metrics cache hit rate: ${rate}% (L1=${l1_rate}% L2=${l2_rate}% L3=${l3_rate}%)"
+}
+
 echo "=========================================="
 echo "=== Starting ${BENCH_LABEL} Benchmark Suite ==="
 echo "=== Framework:    $FRAMEWORK"
@@ -404,7 +520,7 @@ echo "=== IO Combos:     ${io_combinations[*]}"
 echo "=== Chip Type:    ${CHIP_TYPE:-(未指定)}"
 echo "=== Tester:       $TESTER"
 echo "=== PD Mode:      $PD"
-echo "=== Cache Stats:  实测前缀缓存命中率（写入报告）"
+echo "=== Cache Stats:  实测缓存命中率（SGLang HiCache L1/L2/L3 / vLLM L1，写入报告）"
 echo "=========================================="
 
 # 外层循环：遍历不同的并发值
@@ -428,9 +544,11 @@ for concurrency in "${concurrency_list[@]}"; do
     echo ">>> Running test: Input=$input_len, Output=$output_len, Concurrency=$concurrency"
     echo ">>> Log file: $log_file"
 
-    # --- vllm: 测试前抓取服务端前缀缓存计数器（与测试后差值计算真实命中率） ---
+    # --- 测试前抓取服务端缓存计数器（与测试后差值计算真实命中率） ---
     if [[ "$FRAMEWORK" == "vllm" ]]; then
       vllm_pc_before="$(wait_vllm_prefix_cache_counters)"
+    elif [[ "$FRAMEWORK" == "sglang" ]]; then
+      sglang_pc_before="$(wait_sglang_cache_counters)"
     fi
 
     # --- 根据框架选择对应的 bench 命令 ---
@@ -477,9 +595,11 @@ for concurrency in "${concurrency_list[@]}"; do
       echo "!!! Error occurred. Check log file: $log_file"
     else
       echo ">>> Success. Results saved to: $log_file"
-      # --- vllm: 计算真实前缀缓存命中率并附加到日志（供 collect_results.py 解析） ---
+      # --- 计算真实缓存命中率并附加到日志（供 collect_results.py 解析） ---
       if [[ "$FRAMEWORK" == "vllm" ]]; then
         append_vllm_cache_report "$log_file" "$vllm_pc_before"
+      elif [[ "$FRAMEWORK" == "sglang" ]]; then
+        append_sglang_cache_report "$log_file" "$sglang_pc_before"
       fi
     fi
 
@@ -530,7 +650,7 @@ elif [[ "$FRAMEWORK" == "vllm" ]]; then
   BENCH_COMMANDS="# 并发数列表: ${CONCURRENCY_STR}
 # IO 组合: ${IO_STR}
 # 注: 脚本在每组测试前后查询服务端 /metrics 的 vllm:prefix_cache_* 计数器，
-#     差值计算真实前缀缓存命中率并写入日志（报告中 Prefix Cache 命中率列为实测值）
+#     差值计算真实前缀缓存命中率并写入日志（报告中 L1命中率列为实测值）
 for CONCURRENCY in ${CONC_LIST}; do
   NUM_PROMPTS=\$CONCURRENCY
   for IO in ${IO_QUOTED}; do
@@ -713,16 +833,22 @@ Mean TPOT (ms):  9.25                         ← Mean TPOT
 
 CSV 表头（`-t` 指定芯片类型后，列名带后缀）：
 
+> **CSV 列按框架条件化**：SGLang 含 `L1命中率`、`L2命中率`、`L3命中率` 三列；vLLM 仅含 `L1命中率` 一列。
+
 ```
-模型名称,推理框架,输入长度,输出长度,并发数,Prefix Cache命中率,输入token吞吐量_<芯片类型> (toks/s),输出token吞吐量_<芯片类型> (toks/s),总token吞吐量_<芯片类型> (toks/s),Mean TTFT_<芯片类型> (ms),P99 TTFT_<芯片类型> (ms),Mean TPOT_<芯片类型> (ms)
+SGLang:
+模型名称,推理框架,输入长度,输出长度,并发数,L1命中率,L2命中率,L3命中率,输入token吞吐量_<芯片类型> (toks/s),输出token吞吐量_<芯片类型> (toks/s),总token吞吐量_<芯片类型> (toks/s),Mean TTFT_<芯片类型> (ms),P99 TTFT_<芯片类型> (ms),Mean TPOT_<芯片类型> (ms)
+
+vLLM:
+模型名称,推理框架,输入长度,输出长度,并发数,L1命中率,输入token吞吐量_<芯片类型> (toks/s),输出token吞吐量_<芯片类型> (toks/s),总token吞吐量_<芯片类型> (toks/s),Mean TTFT_<芯片类型> (ms),P99 TTFT_<芯片类型> (ms),Mean TPOT_<芯片类型> (ms)
 ```
 
 CSV 示例：
 
 ```
-模型名称,推理框架,输入长度,输出长度,并发数,Prefix Cache命中率,输入token吞吐量_H100 (toks/s),输出token吞吐量_H100 (toks/s),总token吞吐量_H100 (toks/s),Mean TTFT_H100 (ms),P99 TTFT_H100 (ms),Mean TPOT_H100 (ms)
-glm-5.2-fp8,sglang,8192,512,1,0.0%,152.64,95.40,248.04,521.44,1820.55,9.25
-glm-5.2-fp8,sglang,8192,512,128,0.0%,152.64,95.40,248.04,321.42,1181.54,9.25
+模型名称,推理框架,输入长度,输出长度,并发数,L1命中率,L2命中率,L3命中率,输入token吞吐量_H100 (toks/s),输出token吞吐量_H100 (toks/s),总token吞吐量_H100 (toks/s),Mean TTFT_H100 (ms),P99 TTFT_H100 (ms),Mean TPOT_H100 (ms)
+glm-5.2-fp8,sglang,8192,512,1,0.0%,0.0%,0.0%,152.64,95.40,248.04,521.44,1820.55,9.25
+glm-5.2-fp8,sglang,8192,512,128,0.0%,0.0%,0.0%,152.64,95.40,248.04,321.42,1181.54,9.25
 ```
 
 也可以**手动执行**收集脚本（如只收集已有日志）：
@@ -739,9 +865,11 @@ python3 _scripts/collect_results.py \
 > **注意**：vLLM 的 `bench serve` 不直接输出"输入 token 吞吐量"，
 > `collect_results.py` 会自动用 `总吞吐量 - 输出吞吐量` 计算补全。
 >
-> **Prefix Cache 命中率列为实测值**（SGLang `--cache-report` / vLLM 服务端 `/metrics`
-> 计数器差值，由 `bench.sh` 自动写入日志）：应为 `0.0%`（服务端已关闭缓存）；
-> 明显大于 0% 说明服务端未关闭缓存；`N/A` 表示无法访问服务端 `/metrics`，未采集到。
+> **缓存命中率列为实测值**（SGLang 服务端 `/metrics` 的 `sglang:prefill_effective_tokens_total`
+> 计数器差值，计算 HiCache L1/L2/L3 三层命中率；vLLM 服务端 `/metrics` 的
+> `vllm:prefix_cache_*` 计数器差值，计算单层 L1 命中率，由 `bench.sh` 自动写入日志）：
+> - **benchmark 类型**：应为 `0.0%`（服务端已关闭缓存）；明显大于 0% 说明未关闭；`N/A` 表示无法采集
+> - **cache 类型**：SGLang 优先取 `/metrics` 实测值（L1+L2+L3 总命中率）；vLLM 取 `/metrics` 实测值；日志无数据时回退到指定值（`-R`）
 
 #### 自动生成 Markdown 测试报告
 
@@ -1108,12 +1236,16 @@ vllm bench serve \
 
 #### 2.2.5 测试结果表
 
-| 模型名称 | 推理框架 | 输入长度 | 输出长度 | 并发数 | Prefix Cache命中率 | 输入token吞吐量\_\<芯片类型\> (toks/s) | 输出token吞吐量\_\<芯片类型\> (toks/s) | 总token吞吐量\_\<芯片类型\> (toks/s) | Mean TTFT\_\<芯片类型\> (ms) | P99 TTFT\_\<芯片类型\> (ms) | Mean TPOT\_\<芯片类型\> (ms) |
-|---|---|---|---|---|---|---|---|---|---|---|---|
-| \<模型名\> | \<框架\> | 65536 | 1 | 1 | 0% | | | | | | |
-| \<模型名\> | \<框架\> | 65536 | 1 | 4 | 0% | | | | | | |
-| ... | ... | ... | ... | ... | ... | | | | | | |
-| \<模型名\> | \<框架\> | 65536 | 1 | 128 | 0% | | | | | | |
+> SGLang 格式（含 L1/L2/L3 三列）：
+
+| 模型名称 | 推理框架 | 输入长度 | 输出长度 | 并发数 | L1命中率 | L2命中率 | L3命中率 | 输入token吞吐量\_\<芯片类型\> (toks/s) | 输出token吞吐量\_\<芯片类型\> (toks/s) | 总token吞吐量\_\<芯片类型\> (toks/s) | Mean TTFT\_\<芯片类型\> (ms) | P99 TTFT\_\<芯片类型\> (ms) | Mean TPOT\_\<芯片类型\> (ms) |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| \<模型名\> | sglang | 65536 | 1 | 1 | 0% | 0% | 0% | | | | | | |
+| \<模型名\> | sglang | 65536 | 1 | 4 | 0% | 0% | 0% | | | | | | |
+| ... | ... | ... | ... | ... | ... | ... | ... | | | | | | |
+| \<模型名\> | sglang | 65536 | 1 | 128 | 0% | 0% | 0% | | | | | | |
+
+> vLLM 格式（仅 L1 一列）：命中率列应为 `0%`（服务端已关闭缓存）。
 
 > **prefill 吞吐量** = 输入 token 吞吐量（SGLang 直接提取 `Input token throughput (tok/s)`；vLLM 用 `总吞吐量 - 输出吞吐量` 计算，`collect_results.py` 自动处理）
 >
@@ -1380,12 +1512,16 @@ decode_tok_s,ttft_ms,tpot_ms,note
 
 #### 2.3.6 测试结果表
 
-| 模型名称 | 推理框架 | 输入长度 | 输出长度 | 并发数 | Prefix Cache命中率 | 输入token吞吐量\_\<芯片类型\> (toks/s) | 输出token吞吐量\_\<芯片类型\> (toks/s) | 总token吞吐量\_\<芯片类型\> (toks/s) | Mean TTFT\_\<芯片类型\> (ms) | P99 TTFT\_\<芯片类型\> (ms) | Mean TPOT\_\<芯片类型\> (ms) |
-|---|---|---|---|---|---|---|---|---|---|---|---|
-| \<模型名\> | \<框架\> | 1 | 512 | 1 | 100% | | | | | | |
-| \<模型名\> | \<框架\> | 1 | 512 | 4 | 100% | | | | | | |
-| ... | ... | ... | ... | ... | ... | | | | | | |
-| \<模型名\> | \<框架\> | 1 | 512 | 128 | 100% | | | | | | |
+> SGLang 格式（含 L1/L2/L3 三列）：
+
+| 模型名称 | 推理框架 | 输入长度 | 输出长度 | 并发数 | L1命中率 | L2命中率 | L3命中率 | 输入token吞吐量\_\<芯片类型\> (toks/s) | 输出token吞吐量\_\<芯片类型\> (toks/s) | 总token吞吐量\_\<芯片类型\> (toks/s) | Mean TTFT\_\<芯片类型\> (ms) | P99 TTFT\_\<芯片类型\> (ms) | Mean TPOT\_\<芯片类型\> (ms) |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| \<模型名\> | sglang | 1 | 512 | 1 | 100% | 0% | 0% | | | | | | |
+| \<模型名\> | sglang | 1 | 512 | 4 | 100% | 0% | 0% | | | | | | |
+| ... | ... | ... | ... | ... | ... | ... | ... | | | | | | |
+| \<模型名\> | sglang | 1 | 512 | 128 | 100% | 0% | 0% | | | | | | |
+
+> vLLM 格式（仅 L1 一列）：命中率列应为 `100%`（缓存已开启，前缀全部命中）。
 
 **指标口径**：
 
@@ -1497,7 +1633,7 @@ HBM 带宽 / NCCL 通信），构建 roofline 上界，计算 MFU 达成率。
 - 预热和测试用**相同的 `--seed` 和 `--gsp-num-groups 1`**，确保共享前缀相同
 - 预热用 `--max-concurrency 1`，测试用目标并发
 - **不加 `--flush-cache`**，确保缓存跨阶段保留
-- SGLang 加 `--cache-report` 输出实际缓存命中统计，可验证命中率
+- SGLang 从 `/metrics` 提取 HiCache L1/L2/L3 三层命中率（`--cache-report` 仅覆盖 L1/radix，可对照验证）
 
 ### 3.3 服务端配置
 
@@ -1651,17 +1787,22 @@ vllm bench serve \
 
 ### 3.6 测试结果表
 
-| 模型名称 | 推理框架 | 输入长度 | 输出长度 | 并发数 | Prefix Cache命中率 | 输入token吞吐量\_\<芯片类型\> (toks/s) | 输出token吞吐量\_\<芯片类型\> (toks/s) | 总token吞吐量\_\<芯片类型\> (toks/s) | Mean TTFT\_\<芯片类型\> (ms) | P99 TTFT\_\<芯片类型\> (ms) | Mean TPOT\_\<芯片类型\> (ms) |
-|---|---|---|---|---|---|---|---|---|---|---|---|
-| \<模型名\> | \<框架\> | 65536 | 512 | 1 | 90% | | | | | | |
-| \<模型名\> | \<框架\> | 65536 | 512 | 4 | 90% | | | | | | |
-| ... | ... | ... | ... | ... | ... | | | | | | |
-| \<模型名\> | \<框架\> | 65536 | 512 | 128 | 90% | | | | | | |
+> SGLang 格式（含 L1/L2/L3 三列）：
 
-> **命中率说明**：Prefix Cache命中率列 = 指定的缓存命中率百分比（默认 90%）。
+| 模型名称 | 推理框架 | 输入长度 | 输出长度 | 并发数 | L1命中率 | L2命中率 | L3命中率 | 输入token吞吐量\_\<芯片类型\> (toks/s) | 输出token吞吐量\_\<芯片类型\> (toks/s) | 总token吞吐量\_\<芯片类型\> (toks/s) | Mean TTFT\_\<芯片类型\> (ms) | P99 TTFT\_\<芯片类型\> (ms) | Mean TPOT\_\<芯片类型\> (ms) |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| \<模型名\> | sglang | 65536 | 512 | 1 | 90% | 0% | 0% | | | | | | |
+| \<模型名\> | sglang | 65536 | 512 | 4 | 90% | 0% | 0% | | | | | | |
+| ... | ... | ... | ... | ... | ... | ... | ... | | | | | | |
+| \<模型名\> | sglang | 65536 | 512 | 128 | 90% | 0% | 0% | | | | | | |
+
+> vLLM 格式（仅 L1 一列）：L1命中率 = 实测值（`/metrics` 计数器差值）。
+
+> **命中率说明**：命中率列 = **实测值**（SGLang 从服务端 `/metrics` 提取 HiCache L1/L2/L3 三层命中率；
+> vLLM 从 `/metrics` 提取单层 L1 命中率），日志无数据时回退到指定值（`-R`）。
 > 每个请求的前缀命中缓存，后缀（输入长度 - 共享前缀长度）未命中需 prefill。
 > 命中率越高，每请求 prefill 量越少，TTFT 越低且分布均匀。
-> SGLang 额外输出 `--cache-report` 实际缓存命中统计，可验证命中率是否符合预期。
+> 若实测值与指定值差异大，需检查服务端缓存配置（如 hierarchical cache 是否影响统计）。
 
 ---
 
