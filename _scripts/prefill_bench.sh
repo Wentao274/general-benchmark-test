@@ -23,6 +23,7 @@ TESTER=""
 PD=""
 DESCRIBE=""
 BACKGROUND=true
+TIMEOUT=3600
 
 DEFAULT_CONCURRENCY="1,4,8,16,32,64,128"
 DEFAULT_IO="65536 1"
@@ -53,6 +54,7 @@ Usage: $0 -F <sglang|vllm> [OPTIONS]
   -s, --sleep SECONDS           每次测试间隔秒数    (default: $SLEEP_TIME)
   -d, --describe TEXT           模型描述信息(可选,填入报告末尾)
   -f, --foreground              前台执行(默认后台)
+  --timeout SECONDS             每组测试超时秒数        (default: $TIMEOUT)
   -h, --help                    显示帮助
 
 示例（默认后台执行）:
@@ -73,6 +75,7 @@ while [[ $# -gt 0 ]]; do
     -s|--sleep)               SLEEP_TIME="$2";           shift 2 ;;
     -d|--describe)            DESCRIBE="$2";             shift 2 ;;
     -f|--foreground)          BACKGROUND=false;          shift   ;;
+    --timeout)                TIMEOUT="$2";              shift 2 ;;
     -t|--chip-type)           CHIP_TYPE="$2";            shift 2 ;;
     -T|--tester)              TESTER="$2";               shift 2 ;;
     -P|--pd)                  PD="$2";                   shift 2 ;;
@@ -150,6 +153,16 @@ if [[ ! -s "$SERVE_CMD_FILE" ]]; then
   exit 1
 fi
 
+# --- 检测可用的 Python 命令 ---
+if command -v python3 &>/dev/null; then
+  PYTHON_CMD="python3"
+elif command -v python &>/dev/null; then
+  PYTHON_CMD="python"
+else
+  echo "ERROR: 找不到 python 或 python3 命令" >&2
+  exit 1
+fi
+
 # --- 后台执行（默认） ---
 if [[ "$BACKGROUND" == "true" ]]; then
   mkdir -p "$REPORT_DIR/${TESTER}"
@@ -166,6 +179,7 @@ if [[ "$BACKGROUND" == "true" ]]; then
     --chip-type "$CHIP_TYPE" \
     --tester "$TESTER" \
     --pd "$PD" \
+    --timeout "$TIMEOUT" \
     --foreground \
     > "$LOG_FILE" 2>&1 &
   PID=$!
@@ -203,6 +217,29 @@ echo "=== Tester:       $TESTER"
 echo "=== PD Mode:      $PD"
 echo "=========================================="
 
+# --- 检测日志中的错误模式（即使 bench 退出码为 0 也可能全部请求失败） ---
+check_log_errors() {
+  local logfile="$1"
+  local patterns=(
+    "All requests failed"
+    "Traceback (most recent call last)"
+    "ConnectionError"
+    "Connection refused"
+    "IndexError"
+    "requests.exceptions"
+    "httpx.ConnectError"
+  )
+  for pat in "${patterns[@]}"; do
+    if grep -q "$pat" "$logfile" 2>/dev/null; then
+      echo "$pat"
+      return 0
+    fi
+  done
+  return 1
+}
+
+FAIL_COUNT=0
+
 for concurrency in "${concurrency_list[@]}"; do
   num_prompts=$((concurrency * 5))
   echo ""
@@ -217,8 +254,9 @@ for concurrency in "${concurrency_list[@]}"; do
     echo ">>> Prefill: Input=$input_len, Output=$output_len, Concurrency=$concurrency"
     echo ">>> Log file: $log_file"
 
+    set +e
     if [[ "$FRAMEWORK" == "sglang" ]]; then
-      python -m sglang.benchmark.serving \
+    timeout "$TIMEOUT" "$PYTHON_CMD" -m sglang.benchmark.serving \
         --backend sglang-oai-chat \
         --base-url "$BASE_URL" \
         --model "$MODEL_PATH" \
@@ -233,7 +271,7 @@ for concurrency in "${concurrency_list[@]}"; do
         --output-file "$jsonl_file" \
         > "$log_file" 2>&1
     elif [[ "$FRAMEWORK" == "vllm" ]]; then
-      vllm bench serve \
+      timeout "$TIMEOUT" vllm bench serve \
         --backend openai-chat \
         --endpoint /v1/chat/completions \
         --base-url "$BASE_URL" \
@@ -253,11 +291,23 @@ for concurrency in "${concurrency_list[@]}"; do
         --ready-check-timeout-sec 30 \
         > "$log_file" 2>&1
     fi
+    bench_rc=$?
+    set -e
 
-    if [ $? -ne 0 ]; then
-      echo "!!! Error occurred. Check log file: $log_file"
+    if [ $bench_rc -eq 124 ]; then
+      echo "!!! TIMEOUT: test killed after ${TIMEOUT}s. Check log file: $log_file"
+      FAIL_COUNT=$((FAIL_COUNT + 1))
+    elif [ $bench_rc -ne 0 ]; then
+      echo "!!! Error occurred (exit code: $bench_rc). Check log file: $log_file"
+      FAIL_COUNT=$((FAIL_COUNT + 1))
     else
-      echo ">>> Success. Results saved to: $log_file"
+      error_pattern="$(check_log_errors "$log_file")"
+      if [[ -n "$error_pattern" ]]; then
+        echo "!!! Log error detected: '$error_pattern'. Check log file: $log_file"
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+      else
+        echo ">>> Success. Results saved to: $log_file"
+      fi
     fi
     echo "--- Finished Input=$input_len. Sleeping for $SLEEP_TIME seconds... ---"
     sleep "$SLEEP_TIME"
@@ -268,6 +318,9 @@ done
 echo ""
 echo "=== All prefill tests finished ==="
 echo "=== Check results in: $RUN_DIR ==="
+if [[ $FAIL_COUNT -gt 0 ]]; then
+  echo "=== WARNING: $FAIL_COUNT test(s) failed. Partial results will still be collected. ==="
+fi
 
 # --- 构建 BENCH_COMMANDS（循环模板，变量占位，用于报告第三部分） ---
 CONC_LIST="${concurrency_list[*]}"
@@ -285,7 +338,7 @@ for CONCURRENCY in ${CONC_LIST}; do
   for IO in ${IO_QUOTED}; do
     INPUT_LEN=\$(echo \"\$IO\" | awk '{print \$1}')
     OUTPUT_LEN=\$(echo \"\$IO\" | awk '{print \$2}')
-    python -m sglang.benchmark.serving \\
+    $PYTHON_CMD -m sglang.benchmark.serving \\
       --backend sglang-oai-chat \\
       --base-url \"\$BASE_URL\" \\
       --model \"\$MODEL_PATH\" \\
@@ -332,7 +385,7 @@ fi
 # --- 自动收集结果生成 CSV ---
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CSV_FILE="${RUN_DIR}/prefill_results.csv"
-python3 "${SCRIPT_DIR}/collect_results.py" \
+"$PYTHON_CMD" "${SCRIPT_DIR}/collect_results.py" \
   --report-dir "$RUN_DIR" \
   --model-name "$SERVED_MODEL_NAME" \
   --framework "$FRAMEWORK" \
@@ -342,13 +395,13 @@ python3 "${SCRIPT_DIR}/collect_results.py" \
 # --- 自动生成 Markdown 测试报告 ---
 MD_FILE="${RUN_DIR}/${TESTER}_${safe_model_name}_${CHIP_TYPE}_${FRAMEWORK}_${PD}_prefill_${RUN_TS}.md"
 if [[ -n "$DESCRIBE" ]]; then
-  python3 "${SCRIPT_DIR}/csv_to_md.py" \
+  "$PYTHON_CMD" "${SCRIPT_DIR}/csv_to_md.py" \
     --csv "$CSV_FILE" \
     --output "$MD_FILE" \
     --bench-command "$BENCH_COMMANDS" \
     --describe "$DESCRIBE"
 else
-  python3 "${SCRIPT_DIR}/csv_to_md.py" \
+  "$PYTHON_CMD" "${SCRIPT_DIR}/csv_to_md.py" \
     --csv "$CSV_FILE" \
     --output "$MD_FILE" \
     --bench-command "$BENCH_COMMANDS"

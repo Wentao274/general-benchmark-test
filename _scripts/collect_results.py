@@ -2,10 +2,11 @@
 # -*- coding: utf-8 -*-
 """collect_results.py — 扫描 bench 日志目录，提取指标汇总为 CSV
 
-支持三种测试类型的日志文件名：
-  benchmark:  bench_bs-{N}_input_len-{IL}-output_len-{OL}.log        (prefix长度=0)
-  prefill:    prefill_bs-{N}_input-{IL}.log                          (prefix长度=0, output_len=1)
-  decode:     decode_bs-{N}_prefix-{PL}-output-{OL}.log              (prefix长度=PL, input_len=1)
+支持四种测试类型的日志文件名：
+  benchmark:  bench_bs-{N}_input_len-{IL}-output_len-{OL}.log        (Prefix Cache命中率=0%)
+  prefill:    prefill_bs-{N}_input-{IL}.log                          (Prefix Cache命中率=0%, output_len=1)
+  decode:     decode_bs-{N}_prefix-{PL}-output-{OL}.log              (Prefix Cache命中率=100%, input_len=1)
+  cache:      cache_bs-{N}_hit-{HR}_input-{IL}-output-{OL}.log      (Prefix Cache命中率=HR%)
 
 支持两种框架的输出格式（SGLang / vLLM），自动匹配英文和中文标签。
 
@@ -33,7 +34,7 @@ def csv_columns(chip_type):
         "输入长度",
         "输出长度",
         "并发数",
-        "prefix长度",
+        "Prefix Cache命中率",
         f"输入token吞吐量_{ct} (toks/s)",
         f"输出token吞吐量_{ct} (toks/s)",
         f"总token吞吐量_{ct} (toks/s)",
@@ -46,9 +47,10 @@ def csv_columns(chip_type):
 # ---------------------------------------------------------------- 文件名解析
 
 def parse_filename(fname):
-    """从日志文件名提取 (test_type, input_len, output_len, concurrency, prefix_len)。
+    """从日志文件名提取 (test_type, input_len, output_len, concurrency, cache_hit_rate_pct)。
 
     返回 None 表示无法识别的文件名。
+    cache_hit_rate_pct 为 Prefix Cache 命中率百分比整数（0~100）。
     """
     # benchmark: bench_bs-{N}_input_len-{IL}-output_len-{OL}.log
     m = re.match(r'bench_bs-(\d+)_input_len-(\d+)-output_len-(\d+)\.log$', fname)
@@ -63,7 +65,13 @@ def parse_filename(fname):
     # decode: decode_bs-{N}_prefix-{PL}-output-{OL}.log
     m = re.match(r'decode_bs-(\d+)_prefix-(\d+)-output-(\d+)\.log$', fname)
     if m:
-        return "decode", 1, int(m.group(3)), int(m.group(1)), int(m.group(2))
+        return "decode", 1, int(m.group(3)), int(m.group(1)), 100
+
+    # cache: cache_bs-{N}_hit-{HR}_input-{IL}-output-{OL}.log
+    m = re.match(r'cache_bs-(\d+)_hit-(\d+)_input-(\d+)-output-(\d+)\.log$', fname)
+    if m:
+        # Prefix Cache命中率 = HR%（从文件名提取）
+        return "cache", int(m.group(3)), int(m.group(4)), int(m.group(1)), int(m.group(2))
 
     return None
 
@@ -163,7 +171,7 @@ def scan_dir(report_dir, model_name, framework):
                 # 跳过非测试日志（如 sglang_bench_时间戳.log）
                 skipped += 1
                 continue
-            test_type, input_len, output_len, concurrency, prefix_len = parsed
+            test_type, input_len, output_len, concurrency, cache_hit_rate = parsed
             filepath = os.path.join(root, fname)
             metrics = parse_log_content(filepath)
             rows.append({
@@ -172,7 +180,7 @@ def scan_dir(report_dir, model_name, framework):
                 "输入长度": input_len,
                 "输出长度": output_len,
                 "并发数": concurrency,
-                "prefix长度": prefix_len,
+                "Prefix Cache命中率": f"{cache_hit_rate}%",
                 "输入token吞吐量": metrics["input_throughput"],
                 "输出token吞吐量": metrics["output_throughput"],
                 "总token吞吐量": metrics["total_throughput"],
@@ -212,8 +220,8 @@ def main():
         print("[WARN] 未在 %s 中找到任何测试日志" % args.report_dir, file=sys.stderr)
         sys.exit(0)
 
-    # 排序：按输入长度 → 输出长度 → prefix长度 → 并发数
-    rows.sort(key=lambda r: (r["输入长度"], r["输出长度"], r["prefix长度"], r["并发数"]))
+    # 排序：按输入长度 → 输出长度 → Prefix Cache命中率 → 并发数
+    rows.sort(key=lambda r: (r["输入长度"], r["输出长度"], r["Prefix Cache命中率"], r["并发数"]))
 
     outdir = os.path.dirname(os.path.abspath(args.out))
     if outdir:
@@ -230,7 +238,7 @@ def main():
                 r["输入长度"],
                 r["输出长度"],
                 r["并发数"],
-                r["prefix长度"],
+                r["Prefix Cache命中率"],
                 r["输入token吞吐量"],
                 r["输出token吞吐量"],
                 r["总token吞吐量"],

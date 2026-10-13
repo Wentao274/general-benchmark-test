@@ -21,6 +21,13 @@
   - [2.2 纯 Prefill 测试](#22-纯-prefill-测试)
   - [2.3 纯 Decode 测试](#23-纯-decode-测试)
   - [2.4 结果归因](#24-结果归因)
+- [第 3 章 指定缓存命中率测试](#第-3-章-指定缓存命中率测试)
+  - [3.1 测试目标](#31-测试目标)
+  - [3.2 测试原理](#32-测试原理)
+  - [3.3 服务端配置](#33-服务端配置)
+  - [3.4 测试参数](#34-测试参数)
+  - [3.5 测试脚本](#35-测试脚本)
+  - [3.6 测试结果表](#36-测试结果表)
 - [附录：文件清单](#附录文件清单)
 
 ---
@@ -39,24 +46,28 @@
 |---|---|---|
 | **输入输出长度组合** | `8192 512` `32768 512` `65536 512` | 格式为 `输入长度 输出长度`，覆盖 8K~64K 输入，输出统一 512 |
 | **并发数序列** | `1, 4, 8, 16, 32, 64, 128` | 并发数 = num_prompts（请求数与并发数相同） |
-| **数据集** | `random-ids`(SGLang) / `random`(vLLM) | 随机 token，避免前缀缓存干扰 |
+| **数据集** | `random-ids`(SGLang) / `random`(vLLM) | 随机 token（缓存注意事项见下方说明） |
 | **random-range-ratio** | `1.0`(SGLang) / `0.0`(vLLM) | 固定长度（SGLang 1.0 表示完全使用 random-input-len，vLLM 0.0 表示固定长度，两者均为固定长度） |
 | **Seed** | `123` | 固定随机种子，保证可复现 |
 | **测试间隔** | `60s` | 每组测试后等待服务恢复稳态 |
 
 **测试矩阵**：7 个并发级别 × 3 个 IO 组合 = **21 组测试**（每个框架）。
 
+> **前缀缓存注意事项（服务端必须关闭前缀缓存）**：固定 seed + 随机数据集意味着**重复执行**、以及**同一轮内不同并发档**（num_prompts 递增时 prompt 集合嵌套）会产生相同请求；若服务端开启前缀缓存，会产生跨轮/轮内缓存命中，吞吐虚高、冷热轮结果不可比。因此服务端部署时必须关闭前缀缓存（SGLang `--disable-radix-cache` / vLLM `--no-enable-prefix-caching`，见 [1.7 部署建议](#17-部署建议)）。测试脚本会**实测**前缀缓存命中率并填入结果表（SGLang `--cache-report` / vLLM 服务端 `/metrics` 计数器差值）：服务端按要求关闭缓存时应为 `0%`；若明显大于 0%，说明服务端未关闭前缀缓存，本组结果无效，需检查部署命令后重测。
+
 ### 1.3 测试结果表
 
-测试完成后，将每组结果汇总至下表。`<芯片类型>` 替换为实际被测芯片型号（如 H100、B200、MTT S80 等）。
+测试完成后，将每组结果汇总至下表（CSV 由脚本自动收集生成）。`<芯片类型>` 替换为实际被测芯片型号（如 H100、B200、MTT S80 等）。
 
-| 模型名称 | 推理框架 | 输入长度 | 输出长度 | 并发数 | prefix长度 | 输入token吞吐量\_\<芯片类型\> (toks/s) | 输出token吞吐量\_\<芯片类型\> (toks/s) | 总token吞吐量\_\<芯片类型\> (toks/s) | Mean TTFT\_\<芯片类型\> (ms) | P99 TTFT\_\<芯片类型\> (ms) | Mean TPOT\_\<芯片类型\> (ms) |
+> **Prefix Cache 命中率为脚本实测值**（非固定 0%）：服务端按要求关闭前缀缓存时应为 `0%`；若明显大于 0%，说明服务端未关闭缓存，本组结果无效（详见 [1.2 测试参数](#12-测试参数)的缓存注意事项）。
+
+| 模型名称 | 推理框架 | 输入长度 | 输出长度 | 并发数 | Prefix Cache命中率 | 输入token吞吐量\_\<芯片类型\> (toks/s) | 输出token吞吐量\_\<芯片类型\> (toks/s) | 总token吞吐量\_\<芯片类型\> (toks/s) | Mean TTFT\_\<芯片类型\> (ms) | P99 TTFT\_\<芯片类型\> (ms) | Mean TPOT\_\<芯片类型\> (ms) |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| \<模型名\> | \<框架\> | 8192 | 512 | 1 | 0 | | | | | | |
-| \<模型名\> | \<框架\> | 8192 | 512 | 4 | 0 | | | | | | |
-| \<模型名\> | \<框架\> | 8192 | 512 | 8 | 0 | | | | | | |
+| \<模型名\> | \<框架\> | 8192 | 512 | 1 | 0.0% | | | | | | |
+| \<模型名\> | \<框架\> | 8192 | 512 | 4 | 0.0% | | | | | | |
+| \<模型名\> | \<框架\> | 8192 | 512 | 8 | 0.0% | | | | | | |
 | ... | ... | ... | ... | ... | ... | | | | | | |
-| \<模型名\> | \<框架\> | 65536 | 512 | 128 | 0 | | | | | | |
+| \<模型名\> | \<框架\> | 65536 | 512 | 128 | 0.0% | | | | | | |
 
 **填写说明**：
 
@@ -70,6 +81,7 @@
 | **Mean TTFT** | 直接提取 | `Mean TTFT (ms)` |
 | **P99 TTFT** | 直接提取 | `P99 TTFT (ms)` |
 | **Mean TPOT** | 直接提取 | `Mean TPOT (ms)` |
+| **Prefix Cache命中率** | 日志实测（SGLang `--cache-report` 输出 / vLLM `/metrics` 计数器差值，由 `bench.sh` 自动写入日志） | `Cache hit rate:` |
 
 ### 1.4 测试脚本（统一）
 
@@ -83,10 +95,29 @@
 > 5. 并发数和 IO 组合可通过 `-c` / `-i` 参数覆盖
 > 6. 测试结束后自动调用 `collect_results.py` 生成汇总 CSV，再自动调用 `csv_to_md.py` 生成 Markdown 测试报告
 > 7. 通过 `-T/--tester` 指定测试人员，报告目录增加 tester 层级（`{report-dir}/{tester}/{model_name}/{TS}/`），Markdown 报告命名为 `{tester}_{model_name}_{chip_type}_{framework}_{pd}_bench_{TS}.md`
+> 8. 实测前缀缓存命中率并写入报告：SGLang bench 命令自动加 `--cache-report`；vLLM 在每组测试前后查询服务端 `/metrics` 的 `vllm:prefix_cache_*` 计数器取差值，写入日志的 `Cache hit rate:` 行由 `collect_results.py` 解析
 
 ```bash
 #!/bin/bash
 set -euo pipefail
+
+# ============================================================
+# Benchmark 基准测试脚本（支持 SGLang / vLLM）
+#
+# 通过 -F/--framework 指定推理框架，自动选择对应的 bench 命令分支：
+#   sglang → python -m sglang.benchmark.serving
+#   vllm   → vllm bench serve
+#
+# 改进点:
+#   1. 合并 sglang_bench.sh 和 vllm_bench.sh，一个脚本支持多框架
+#   2. 提取模型服务名的最后一段（以 / \ 分割）并清除残留分隔符（: \）作为目录名
+#   3. BASE_URL / MODEL_PATH / SERVED_MODEL_NAME 支持命令行参数传递
+#   4. 默认后台执行（自动 nohup + 日志重定向），-f/--foreground 切前台
+#   5. 并发数和 IO 组合可通过参数覆盖
+#   6. 测试结束后自动调用 collect_results.py 生成汇总 CSV
+#   7. 实测前缀缓存命中率并写入报告（SGLang: --cache-report；
+#      vLLM: 测试前后查询服务端 /metrics 的 vllm:prefix_cache_* 计数器取差值）
+# ============================================================
 
 # --- 默认配置 ---
 FRAMEWORK=""
@@ -99,6 +130,7 @@ REPORT_DIR=""
 CHIP_TYPE=""
 TESTER=""
 PD=""
+DESCRIBE=""
 BACKGROUND=true
 
 # 并发数列表（同时也是 num-prompts 的值）
@@ -117,22 +149,24 @@ Usage: $0 -F <sglang|vllm> [OPTIONS]
   -m, --model-path PATH         模型路径
   -n, --served-model-name NAME  服务模型名
   -t, --chip-type TYPE          芯片类型(用于CSV列名后缀,如H100/B200)
-  -T, --tester NAME            测试人员(用于报告目录层级和报告命名)
-  -P, --pd MODE                PD部署模式: agg(非PD分离) 或 disagg(PD分离)
+  -T, --tester NAME             测试人员(用于报告目录层级和报告命名)
+  -P, --pd MODE                 PD部署模式: agg(非PD分离) 或 disagg(PD分离)
 
 可选参数:
   -r, --report-dir DIR          报告输出目录        (default: ./{framework}_reports)
   -c, --concurrency LIST        并发数列表(逗号分隔) (default: $DEFAULT_CONCURRENCY)
   -i, --io-combinations LIST    IO组合(逗号分隔,每组"in out")
-                                 (default: $DEFAULT_IO)
+                                  (default: $DEFAULT_IO)
   -s, --sleep SECONDS           每次测试间隔秒数    (default: $SLEEP_TIME)
+  -d, --describe TEXT           模型描述信息(可选,填入报告末尾)
   -f, --foreground             前台执行(默认后台)
+  --timeout SECONDS            每组测试超时秒数        (default: $TIMEOUT)
   -h, --help                    显示帮助
 
 示例（默认后台执行）:
   $0 -F sglang -u http://127.0.0.1:8080 -m /data/model -n model-name -t H100 -T zhangsan -P agg
-  $0 -F vllm   -u http://127.0.0.1:8000 -m /data/model -n model-name -t H100 -T zhangsan -P agg
-  $0 -F sglang -f -u http://... -m /path -n name -t H100 -T zhangsan -P agg              # 前台执行
+  $0 -F vllm   -u http://127.0.0.1:8000 -m /data/model -n model-name -t H100 -T zhangsan -P disagg
+  $0 -F sglang -f -u http://... -m /path -n name -T zhangsan -P agg              # 前台执行
 EOF
 }
 
@@ -146,6 +180,7 @@ while [[ $# -gt 0 ]]; do
     -c|--concurrency)         CONCURRENCY_ARG="$2";      shift 2 ;;
     -i|--io-combinations)     IO_ARG="$2";              shift 2 ;;
     -s|--sleep)               SLEEP_TIME="$2";           shift 2 ;;
+    -d|--describe)            DESCRIBE="$2";             shift 2 ;;
     -f|--foreground)          BACKGROUND=false;          shift   ;;
     -t|--chip-type)           CHIP_TYPE="$2";            shift 2 ;;
     -T|--tester)              TESTER="$2";               shift 2 ;;
@@ -188,7 +223,7 @@ esac
 MISSING=""
 [[ -z "$BASE_URL" ]]          && MISSING+="  --base-url / -u\n"
 [[ -z "$MODEL_PATH" ]]        && MISSING+="  --model-path / -m\n"
-[[ -z "$SERVED_MODEL_NAME" ]]   && MISSING+="  --served-model-name / -n\n"
+[[ -z "$SERVED_MODEL_NAME" ]] && MISSING+="  --served-model-name / -n\n"
 [[ -z "$CHIP_TYPE" ]]         && MISSING+="  --chip-type / -t\n"
 [[ -z "$TESTER" ]]            && MISSING+="  --tester / -T\n"
 [[ -z "$PD" ]]                 && MISSING+="  --pd / -P\n"
@@ -228,7 +263,6 @@ fi
 if [[ "$BACKGROUND" == "true" ]]; then
   mkdir -p "$REPORT_DIR/${TESTER}"
   LOG_FILE="${REPORT_DIR}/${TESTER}/${LOG_PREFIX}_$(date +%Y%m%d_%H%M%S).log"
-  # 重新启动自身（带 --foreground 强制前台），输出重定向到日志文件
   nohup "$0" \
     --framework "$FRAMEWORK" \
     --base-url "$BASE_URL" \
@@ -262,9 +296,101 @@ IFS=',' read -ra io_combinations <<< "$IO_STR"
 # --- 提取模型服务名最后一段（以 / \ 分割），并清除残留 : \，用于目录创建 ---
 safe_model_name=$(echo "$SERVED_MODEL_NAME" | sed 's/.*[\/\\]//; s/[:\\]//g')
 
+# --- 运行时间戳（作为本次测试的子目录名，避免覆盖） ---
+RUN_TS=$(date +%Y%m%d_%H%M%S)
+
 # --- 创建报告目录 ---
 RUN_DIR="$REPORT_DIR/${TESTER}/${safe_model_name}/${RUN_TS}"
 mkdir -p "$RUN_DIR"
+
+# ============================================================
+# 前缀缓存命中率实测（用于校验服务端是否按要求关闭了前缀缓存）
+#   SGLang: bench 命令加 --cache-report，从请求响应统计真实命中 token 数
+#   vLLM:   bench serve 无缓存统计，改为测试前后查询服务端 /metrics 的
+#           vllm:prefix_cache_queries / vllm:prefix_cache_hits 计数器，
+#           差值即本组测试的查询/命中 token 数
+# 命中率写入 bench 日志（"Cache hit rate:" 行），collect_results.py 解析
+# ============================================================
+
+# --- vLLM: 从服务端 /metrics 提取前缀缓存计数器（token 数，跨 engine 求和） ---
+# 输出 "<queries> <hits>"；/metrics 不可用或无该指标时输出 "N/A"
+get_vllm_prefix_cache_counters() {
+  curl -s --max-time 10 "$BASE_URL/metrics" 2>/dev/null | awk '
+    function val(line,   s, a) {
+      s = line
+      sub(/\{.*\}/, "", s)           # 去掉 label（防 label 值含空格）
+      sub(/^[^ \t]*[ \t]*/, "", s)   # 去掉指标名，剩余为数值
+      if (s == "") return 0
+      split(s, a, /[ \t]+/)
+      return a[1] + 0
+    }
+    /^vllm:(gpu_)?prefix_cache_queries(_total)?[ \t{]/ { q += val($0); found = 1 }
+    /^vllm:(gpu_)?prefix_cache_hits(_total)?[ \t{]/    { h += val($0); found = 1 }
+    END {
+      if (found) printf "%d %d", q, h
+      else print "N/A"
+    }
+  ' || true
+}
+
+# --- vLLM: 等待计数器稳定（服务端统计有刷新延迟），输出稳定值 "<queries> <hits>" ---
+wait_vllm_prefix_cache_counters() {
+  local prev cur i
+  prev="$(get_vllm_prefix_cache_counters)"
+  for i in 1 2 3 4 5 6; do
+    sleep 5
+    cur="$(get_vllm_prefix_cache_counters)"
+    [[ "$cur" == "$prev" ]] && break
+    prev="$cur"
+  done
+  echo "$prev"
+}
+
+# --- vLLM: 用测试前后计数器差值计算真实命中率，附加到 bench 日志 ---
+# 输出格式与 SGLang --cache-report 对齐（"Cache hit rate:" 行），便于统一解析
+append_vllm_cache_report() {
+  local log_file="$1" before="$2"
+  local after q_before h_before q_after h_after q_delta h_delta rate
+
+  after="$(wait_vllm_prefix_cache_counters)"
+
+  if [[ "$before" == "N/A" || "$after" == "N/A" ]]; then
+    echo ">>> [WARN] 无法从 ${BASE_URL}/metrics 获取前缀缓存计数器，本组命中率记为 N/A"
+    {
+      echo ""
+      echo "--------------- Prefix Cache Hit Details ---------------"
+      echo "Cache hit rate:                       N/A (prefix cache counters unavailable from server /metrics)"
+    } >> "$log_file"
+    return
+  fi
+
+  read -r q_before h_before <<< "$before" || true
+  read -r q_after h_after <<< "$after" || true
+  q_delta=$(( q_after - q_before ))
+  h_delta=$(( h_after - h_before ))
+
+  if [[ "$q_delta" -le 0 ]]; then
+    # 服务端未执行任何前缀缓存查询（前缀缓存已关闭时的典型表现，命中率即 0%）
+    {
+      echo ""
+      echo "--------------- Prefix Cache Hit Details ---------------"
+      echo "Prefix cache queries (tokens):        0"
+      echo "Prefix cache hits (tokens):           0"
+      echo "Cache hit rate:                       0.0% (server reported no prefix cache activity)"
+    } >> "$log_file"
+    return
+  fi
+
+  rate=$(awk -v h="$h_delta" -v q="$q_delta" 'BEGIN { printf "%.1f", h * 100 / q }')
+  {
+    echo ""
+    echo "--------------- Prefix Cache Hit Details ---------------"
+    echo "Prefix cache queries (tokens):        ${q_delta}"
+    echo "Prefix cache hits (tokens):           ${h_delta}"
+    echo "Cache hit rate:                       ${rate}%"
+  } >> "$log_file"
+  echo ">>> Prefix cache hit rate: ${rate}% (hits ${h_delta} / queries ${q_delta} tokens)"
+}
 
 echo "=========================================="
 echo "=== Starting ${BENCH_LABEL} Benchmark Suite ==="
@@ -278,10 +404,8 @@ echo "=== IO Combos:     ${io_combinations[*]}"
 echo "=== Chip Type:    ${CHIP_TYPE:-(未指定)}"
 echo "=== Tester:       $TESTER"
 echo "=== PD Mode:      $PD"
+echo "=== Cache Stats:  实测前缀缓存命中率（写入报告）"
 echo "=========================================="
-
-# --- 运行时间戳（用于输出文件名，避免覆盖） ---
-RUN_TS=$(date +%Y%m%d_%H%M%S)
 
 # 外层循环：遍历不同的并发值
 for concurrency in "${concurrency_list[@]}"; do
@@ -298,10 +422,16 @@ for concurrency in "${concurrency_list[@]}"; do
 
     # 构建日志文件路径
     log_file="${RUN_DIR}/bench_bs-${num_prompts}_input_len-${input_len}-output_len-${output_len}.log"
+    jsonl_file="${RUN_DIR}/bench_bs-${num_prompts}_input_len-${input_len}-output_len-${output_len}.jsonl"
 
     echo ""
     echo ">>> Running test: Input=$input_len, Output=$output_len, Concurrency=$concurrency"
     echo ">>> Log file: $log_file"
+
+    # --- vllm: 测试前抓取服务端前缀缓存计数器（与测试后差值计算真实命中率） ---
+    if [[ "$FRAMEWORK" == "vllm" ]]; then
+      vllm_pc_before="$(wait_vllm_prefix_cache_counters)"
+    fi
 
     # --- 根据框架选择对应的 bench 命令 ---
     if [[ "$FRAMEWORK" == "sglang" ]]; then
@@ -317,6 +447,8 @@ for concurrency in "${concurrency_list[@]}"; do
         --num-prompts "$num_prompts" \
         --max-concurrency "$concurrency" \
         --seed "$SEED" \
+        --cache-report \
+        --output-file "$jsonl_file" \
         > "$log_file" 2>&1
     elif [[ "$FRAMEWORK" == "vllm" ]]; then
       vllm bench serve \
@@ -345,6 +477,10 @@ for concurrency in "${concurrency_list[@]}"; do
       echo "!!! Error occurred. Check log file: $log_file"
     else
       echo ">>> Success. Results saved to: $log_file"
+      # --- vllm: 计算真实前缀缓存命中率并附加到日志（供 collect_results.py 解析） ---
+      if [[ "$FRAMEWORK" == "vllm" ]]; then
+        append_vllm_cache_report "$log_file" "$vllm_pc_before"
+      fi
     fi
 
     # 每次测试后等待指定时间
@@ -386,12 +522,15 @@ for CONCURRENCY in ${CONC_LIST}; do
       --random-range-ratio 1.0 \\
       --num-prompts \$NUM_PROMPTS \\
       --max-concurrency \$CONCURRENCY \\
-      --seed ${SEED}
-  done
+      --seed ${SEED} \\
+      --cache-report
+   done
 done"
 elif [[ "$FRAMEWORK" == "vllm" ]]; then
   BENCH_COMMANDS="# 并发数列表: ${CONCURRENCY_STR}
 # IO 组合: ${IO_STR}
+# 注: 脚本在每组测试前后查询服务端 /metrics 的 vllm:prefix_cache_* 计数器，
+#     差值计算真实前缀缓存命中率并写入日志（报告中 Prefix Cache 命中率列为实测值）
 for CONCURRENCY in ${CONC_LIST}; do
   NUM_PROMPTS=\$CONCURRENCY
   for IO in ${IO_QUOTED}; do
@@ -431,10 +570,18 @@ python3 "${SCRIPT_DIR}/collect_results.py" \
 
 # --- 自动生成 Markdown 测试报告 ---
 MD_FILE="${RUN_DIR}/${TESTER}_${safe_model_name}_${CHIP_TYPE}_${FRAMEWORK}_${PD}_bench_${RUN_TS}.md"
-python3 "${SCRIPT_DIR}/csv_to_md.py" \
-  --csv "$CSV_FILE" \
-  --output "$MD_FILE" \
-  --bench-command "$BENCH_COMMANDS"
+if [[ -n "$DESCRIBE" ]]; then
+  python3 "${SCRIPT_DIR}/csv_to_md.py" \
+    --csv "$CSV_FILE" \
+    --output "$MD_FILE" \
+    --bench-command "$BENCH_COMMANDS" \
+    --describe "$DESCRIBE"
+else
+  python3 "${SCRIPT_DIR}/csv_to_md.py" \
+    --csv "$CSV_FILE" \
+    --output "$MD_FILE" \
+    --bench-command "$BENCH_COMMANDS"
+fi
 ```
 
 ### 1.5 使用方法
@@ -507,6 +654,7 @@ python3 "${SCRIPT_DIR}/csv_to_md.py" \
 | `--chip-type` | `-t` | **必选** 芯片类型（用于结果 CSV 列名后缀，如 `H100`/`B200`） | — |
 | `--tester` | `-T` | **必选** 测试人员（用于报告目录层级和报告命名） | — |
 | `--pd` | `-P` | **必选** PD部署模式: `agg`(非PD分离) 或 `disagg`(PD分离) | — |
+| `--timeout` | | 每组测试超时秒数（超时自动终止并跳过，继续下一组） | `3600` |
 
 ### 1.6 结果解析与汇总
 
@@ -566,15 +714,15 @@ Mean TPOT (ms):  9.25                         ← Mean TPOT
 CSV 表头（`-t` 指定芯片类型后，列名带后缀）：
 
 ```
-模型名称,推理框架,输入长度,输出长度,并发数,prefix长度,输入token吞吐量_<芯片类型> (toks/s),输出token吞吐量_<芯片类型> (toks/s),总token吞吐量_<芯片类型> (toks/s),Mean TTFT_<芯片类型> (ms),P99 TTFT_<芯片类型> (ms),Mean TPOT_<芯片类型> (ms)
+模型名称,推理框架,输入长度,输出长度,并发数,Prefix Cache命中率,输入token吞吐量_<芯片类型> (toks/s),输出token吞吐量_<芯片类型> (toks/s),总token吞吐量_<芯片类型> (toks/s),Mean TTFT_<芯片类型> (ms),P99 TTFT_<芯片类型> (ms),Mean TPOT_<芯片类型> (ms)
 ```
 
 CSV 示例：
 
 ```
-模型名称,推理框架,输入长度,输出长度,并发数,prefix长度,输入token吞吐量_H100 (toks/s),输出token吞吐量_H100 (toks/s),总token吞吐量_H100 (toks/s),Mean TTFT_H100 (ms),P99 TTFT_H100 (ms),Mean TPOT_H100 (ms)
-glm-5.2-fp8,sglang,8192,512,1,0,152.64,95.40,248.04,521.44,1820.55,9.25
-glm-5.2-fp8,sglang,8192,512,128,0,152.64,95.40,248.04,321.42,1181.54,9.25
+模型名称,推理框架,输入长度,输出长度,并发数,Prefix Cache命中率,输入token吞吐量_H100 (toks/s),输出token吞吐量_H100 (toks/s),总token吞吐量_H100 (toks/s),Mean TTFT_H100 (ms),P99 TTFT_H100 (ms),Mean TPOT_H100 (ms)
+glm-5.2-fp8,sglang,8192,512,1,0.0%,152.64,95.40,248.04,521.44,1820.55,9.25
+glm-5.2-fp8,sglang,8192,512,128,0.0%,152.64,95.40,248.04,321.42,1181.54,9.25
 ```
 
 也可以**手动执行**收集脚本（如只收集已有日志）：
@@ -590,6 +738,10 @@ python3 _scripts/collect_results.py \
 
 > **注意**：vLLM 的 `bench serve` 不直接输出"输入 token 吞吐量"，
 > `collect_results.py` 会自动用 `总吞吐量 - 输出吞吐量` 计算补全。
+>
+> **Prefix Cache 命中率列为实测值**（SGLang `--cache-report` / vLLM 服务端 `/metrics`
+> 计数器差值，由 `bench.sh` 自动写入日志）：应为 `0.0%`（服务端已关闭缓存）；
+> 明显大于 0% 说明服务端未关闭缓存；`N/A` 表示无法访问服务端 `/metrics`，未采集到。
 
 #### 自动生成 Markdown 测试报告
 
@@ -638,6 +790,7 @@ python -m sglang.launch_server \
   --dp 1 \
   --pp 1 \
   --ep 1 \
+  --disable-radix-cache \
   --tool-call-parser glm47 \
   --reasoning-parser glm45
 ```
@@ -657,13 +810,14 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
   -dp 1 \
   -pp 1 \
   --enable-chunked-prefill \
+  --no-enable-prefix-caching \
   --enable-auto-tool-choice \
   --tool-call-parser glm47 \
   --reasoning-parser glm45
 ```
 
-> **注意**：以上命令为第 1 章 Benchmark 的部署示例（前缀缓存开/关均可）。
-> 第 2 章纯 Prefill / 纯 Decode 的部署命令需调整前缀缓存参数，详见 [2.1.1 模型部署注意事项](#211-模型部署注意事项前缀缓存开关)。
+> **注意**：以上命令为第 1 章 Benchmark 的部署示例（**已关闭前缀缓存**，原因见 [1.2 测试参数](#12-测试参数)的缓存注意事项）。
+> 第 1 章与第 2 章纯 Prefill 的缓存要求相同（均关闭），可共用同一服务实例；纯 Decode / 第 3 章需开启前缀缓存，须另部署，详见 [2.1.1 模型部署注意事项](#211-模型部署注意事项前缀缓存开关)。
 
 #### 参数说明
 
@@ -681,15 +835,15 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 | 数据并行 | `--dp` | `--data-parallel-size`（`-dp`） | 默认 1 |
 | 流水线并行 | `--pp` | `--pipeline-parallel-size`（`-pp`） | 默认 1 |
 | 专家并行 | `--ep` | `--enable-expert-parallel`（`-ep`） | SGLang 设整数并行数；vLLM 布尔开关，开启后 MoE 层用 EP 替代 TP |
-| 关闭前缀缓存 | `--disable-radix-cache` | `--no-enable-prefix-caching` | 纯 Prefill 必加，纯 Decode **不加**，详见第 2 章 |
+| 关闭前缀缓存 | `--disable-radix-cache` | `--no-enable-prefix-caching` | 第 1 章 Benchmark 和纯 Prefill 必加；纯 Decode / 第 3 章 **不加**（需开启缓存） |
 | 工具调用 | `--tool-call-parser` | `--enable-auto-tool-choice` | SGLang 指定 parser 即启用工具调用；vLLM 需先加 `--enable-auto-tool-choice` |
 | 工具解析器 | `--tool-call-parser` | `--tool-call-parser` | 如 `glm47`、`qwen25` 等，按模型选择 |
 | 推理解析器 | `--reasoning-parser` | `--reasoning-parser` | 如 `glm45`，解析思维链标签 |
 
 > **提示**：
 > - `--tool-call-parser` 和 `--reasoning-parser` 的具体值取决于模型架构，请按实际模型选择。
-> - 纯 Decode 测试部署时**不要加** `--disable-radix-cache` / `--no-enable-prefix-caching`，否则共享前缀无法命中缓存。
-> - 纯 Prefill 和纯 Decode 测试需**分别部署**独立服务实例，缓存开关要求相反。
+> - 纯 Decode / 第 3 章测试部署时**不要加** `--disable-radix-cache` / `--no-enable-prefix-caching`，否则共享前缀无法命中缓存。
+> - 第 1 章 Benchmark 与纯 Prefill 均需关闭前缀缓存，可共用同一服务实例；纯 Decode / 第 3 章需另部署独立服务实例（缓存开关要求相反）。
 
 ---
 
@@ -914,6 +1068,7 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 | `--sleep` | `-s` | | `60` | 每组测试间隔（秒） |
 | `--describe` | `-d` | | — | 模型描述信息（可选，填入报告末尾单独章节） |
 | `--foreground` | `-f` | | 后台 | 前台执行 |
+| `--timeout` | | | `3600` | 每组测试超时秒数（超时自动终止并跳过，继续下一组） |
 | `--report-dir` | `-r` | | `./{framework}_prefill_reports` | 报告输出目录 |
 
 核心命令（SGLang）：
@@ -953,12 +1108,12 @@ vllm bench serve \
 
 #### 2.2.5 测试结果表
 
-| 模型名称 | 推理框架 | 输入长度 | 输出长度 | 并发数 | prefix长度 | 输入token吞吐量\_\<芯片类型\> (toks/s) | 输出token吞吐量\_\<芯片类型\> (toks/s) | 总token吞吐量\_\<芯片类型\> (toks/s) | Mean TTFT\_\<芯片类型\> (ms) | P99 TTFT\_\<芯片类型\> (ms) | Mean TPOT\_\<芯片类型\> (ms) |
+| 模型名称 | 推理框架 | 输入长度 | 输出长度 | 并发数 | Prefix Cache命中率 | 输入token吞吐量\_\<芯片类型\> (toks/s) | 输出token吞吐量\_\<芯片类型\> (toks/s) | 总token吞吐量\_\<芯片类型\> (toks/s) | Mean TTFT\_\<芯片类型\> (ms) | P99 TTFT\_\<芯片类型\> (ms) | Mean TPOT\_\<芯片类型\> (ms) |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| \<模型名\> | \<框架\> | 65536 | 1 | 1 | 0 | | | | | | |
-| \<模型名\> | \<框架\> | 65536 | 1 | 4 | 0 | | | | | | |
+| \<模型名\> | \<框架\> | 65536 | 1 | 1 | 0% | | | | | | |
+| \<模型名\> | \<框架\> | 65536 | 1 | 4 | 0% | | | | | | |
 | ... | ... | ... | ... | ... | ... | | | | | | |
-| \<模型名\> | \<框架\> | 65536 | 1 | 128 | 0 | | | | | | |
+| \<模型名\> | \<框架\> | 65536 | 1 | 128 | 0% | | | | | | |
 
 > **prefill 吞吐量** = 输入 token 吞吐量（SGLang 直接提取 `Input token throughput (tok/s)`；vLLM 用 `总吞吐量 - 输出吞吐量` 计算，`collect_results.py` 自动处理）
 >
@@ -1104,6 +1259,7 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 | `--sleep` | `-s` | | `60` | 每组测试间隔（秒） |
 | `--describe` | `-d` | | — | 模型描述信息（可选，填入报告末尾单独章节） |
 | `--foreground` | `-f` | | 后台 | 前台执行 |
+| `--timeout` | | | `3600` | 每组测试超时秒数（超时自动终止并跳过，继续下一组） |
 | `--report-dir` | `-r` | | `./{framework}_decode_reports` | 报告输出目录 |
 
 核心命令（SGLang — `generated-shared-prefix`）：
@@ -1224,12 +1380,12 @@ decode_tok_s,ttft_ms,tpot_ms,note
 
 #### 2.3.6 测试结果表
 
-| 模型名称 | 推理框架 | 输入长度 | 输出长度 | 并发数 | prefix长度 | 输入token吞吐量\_\<芯片类型\> (toks/s) | 输出token吞吐量\_\<芯片类型\> (toks/s) | 总token吞吐量\_\<芯片类型\> (toks/s) | Mean TTFT\_\<芯片类型\> (ms) | P99 TTFT\_\<芯片类型\> (ms) | Mean TPOT\_\<芯片类型\> (ms) |
+| 模型名称 | 推理框架 | 输入长度 | 输出长度 | 并发数 | Prefix Cache命中率 | 输入token吞吐量\_\<芯片类型\> (toks/s) | 输出token吞吐量\_\<芯片类型\> (toks/s) | 总token吞吐量\_\<芯片类型\> (toks/s) | Mean TTFT\_\<芯片类型\> (ms) | P99 TTFT\_\<芯片类型\> (ms) | Mean TPOT\_\<芯片类型\> (ms) |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| \<模型名\> | \<框架\> | 1 | 512 | 1 | 8192 | | | | | | |
-| \<模型名\> | \<框架\> | 1 | 512 | 4 | 8192 | | | | | | |
+| \<模型名\> | \<框架\> | 1 | 512 | 1 | 100% | | | | | | |
+| \<模型名\> | \<框架\> | 1 | 512 | 4 | 100% | | | | | | |
 | ... | ... | ... | ... | ... | ... | | | | | | |
-| \<模型名\> | \<框架\> | 1 | 512 | 128 | 65536 | | | | | | |
+| \<模型名\> | \<框架\> | 1 | 512 | 128 | 100% | | | | | | |
 
 **指标口径**：
 
@@ -1271,18 +1427,257 @@ HBM 带宽 / NCCL 通信），构建 roofline 上界，计算 MFU 达成率。
 
 ---
 
+## 第 3 章 指定缓存命中率测试
+
+### 3.1 测试目标
+
+在指定的前缀缓存命中率下，测量推理服务的端到端性能指标：输入/输出/总 token 吞吐量、TTFT、TPOT。
+
+采用**前缀级命中**方案：每个请求的输入由共享前缀（命中缓存）和唯一后缀（未命中）组成，命中率 = 共享前缀长度 / 输入总长度。所有请求都部分命中缓存，TTFT 均匀分布，模拟生产环境中"每个请求都有部分历史对话 + 部分新内容"的场景。
+
+### 3.2 测试原理
+
+#### 前缀级命中模型
+
+```
+每个请求的输入 = 共享前缀（命中部分）+ 唯一后缀（未命中部分）
+缓存命中率 = 共享前缀长度 / 输入总长度 × 100%
+
+共享前缀长度 = 输入长度 × 命中率 / 100
+唯一后缀长度 = 输入长度 - 共享前缀长度
+```
+
+所有请求共享同一段前缀 → 前缀部分命中缓存（prefill ≈ 0）
+每个请求有不同的后缀 → 后缀部分未命中（需 prefill 后缀长度对应的 tokens）
+
+| 目标命中率 | 输入长度 | 共享前缀 (hit) | 唯一后缀 (miss) | 每请求 prefill |
+|---|---|---|---|---|
+| 50% | 65536 | 32768 | 32768 | 32768 tokens |
+| 80% | 65536 | 52428 | 13108 | 13108 tokens |
+| 90% | 65536 | 58982 | 6554 | 6554 tokens |
+| 95% | 65536 | 62259 | 3277 | 3277 tokens |
+| 99% | 65536 | 64830 | 706 | 706 tokens |
+
+**与请求级命中的区别**：
+
+| | 前缀级命中（本方案） | 请求级命中 |
+|---|---|---|
+| **含义** | 每个请求 90% 前缀命中 + 10% 后缀未命中 | 90% 请求完全命中 + 10% 请求完全不命中 |
+| **TTFT 分布** | 均匀（每个请求都 prefill 10%） | 双峰（hit 请求 TTFT 极低，miss 请求 TTFT 极高） |
+| **模拟场景** | 每个请求都有部分历史 + 部分新内容 | 部分请求是老用户，部分是新用户 |
+
+#### 两阶段测试
+
+```
+阶段 1 — 预热（不计量）：
+  用 concurrency=1 发送 1 个请求，将共享前缀填入缓存
+  （output_len=1，快速完成）
+
+阶段 2 — 测试（计量）：
+  用目标并发发送 N_total = 5 × 并发数 个请求
+  所有请求共享同一前缀（相同 seed + gsp-num-groups=1）→ 前缀命中
+  每个请求有不同的后缀 → 后缀未命中
+  每个请求 prefill 唯一后缀部分（= 输入长度 × (1-命中率)）
+```
+
+#### 数据集选择
+
+| 框架 | 数据集 | 关键参数 |
+|---|---|---|
+| **SGLang** | `generated-shared-prefix` (GSP) | `--gsp-num-groups 1` `--gsp-prompts-per-group N_total` `--gsp-system-prompt-len PL` `--gsp-question-len QL` `--gsp-output-len 512` `--cache-report` |
+| **vLLM** | `prefix_repetition` | `--prefix-repetition-num-prefixes 1` `--prefix-repetition-prefix-len PL` `--prefix-repetition-suffix-len QL` `--prefix-repetition-output-len 512` |
+
+其中：
+- `PL` = 共享前缀长度 = 输入长度 × 命中率 / 100
+- `QL` = 唯一后缀长度 = 输入长度 - 共享前缀长度
+- SGLang GSP：`gsp-num-groups 1` 生成 1 个共享前缀，`gsp-prompts-per-group N_total` 生成 N_total 个不同 question
+- vLLM prefix_repetition：`num-prefixes 1` 生成 1 个共享前缀，每个请求的 suffix 随机生成（各不相同）
+
+关键点：
+- 预热和测试用**相同的 `--seed` 和 `--gsp-num-groups 1`**，确保共享前缀相同
+- 预热用 `--max-concurrency 1`，测试用目标并发
+- **不加 `--flush-cache`**，确保缓存跨阶段保留
+- SGLang 加 `--cache-report` 输出实际缓存命中统计，可验证命中率
+
+### 3.3 服务端配置
+
+必须**开启**前缀缓存（与纯 Decode 测试相同）：
+
+| 框架 | 启动参数 |
+|---|---|
+| **SGLang** | 默认开启（不要加 `--disable-radix-cache`） |
+| **vLLM** | 默认开启（不要加 `--no-enable-prefix-caching`） |
+
+```bash
+# SGLang 服务端示例（前缀缓存保持开启 = 默认）
+python -m sglang.launch_server \
+  --model-path /data1/GLM-5.2-Channel-FP8-w8a8 \
+  --tp 8 --port 8080
+  # 不加 --disable-radix-cache
+
+# vLLM 服务端示例（前缀缓存保持开启 = 默认）
+vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
+  --served-model-name glm-5.2-fp8 \
+  -tp 8 --port 8000
+  # 不加 --no-enable-prefix-caching
+```
+
+### 3.4 测试参数
+
+| 参数 | 值 | 说明 |
+|---|---|---|
+| **输入长度** | `65536` | 固定 64K |
+| **输出长度** | `512` | 固定 |
+| **缓存命中率** | `90`（默认） | 可通过 `-R` 指定 1~99，前缀级命中 |
+| **共享前缀长度** | `输入长度 × 命中率/100` | 90% → 58982, 95% → 62259 |
+| **唯一后缀长度** | `输入长度 - 共享前缀长度` | 90% → 6554, 95% → 3277 |
+| **N_total** | `5 × concurrency` | 测试阶段总请求数（5倍并发） |
+| **并发数** | `1, 4, 8, 16, 32, 64, 128` | max-concurrency（仅阶段 2） |
+| **Seed** | `123` | 可复现（预热和测试必须相同） |
+
+### 3.5 测试脚本
+
+**`_scripts/cache_bench.sh`**（支持 `-F sglang|vllm` 切换框架）：
+
+```bash
+# SGLang（默认 90% 命中率）
+./cache_bench.sh -F sglang \
+  -u http://127.0.0.1:8080 \
+  -m /data1/GLM-5.2-Channel-FP8-w8a8 \
+  -n glm-5.2-fp8 -t H100 \
+  -c 1,4,8,16,32,64,128 \
+  -R 90 \
+  -T zhangsan -P agg
+
+# vLLM（指定 95% 命中率）
+./cache_bench.sh -F vllm \
+  -u http://127.0.0.1:8000 \
+  -m /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
+  -n glm-5.2-fp8 -t H100 \
+  -c 1,4,8,16,32,64,128 \
+  -R 95 \
+  -T zhangsan -P disagg
+
+# 默认后台执行，加 -f 前台
+./cache_bench.sh -F sglang -f -u http://... -m /path -n name -t H100 -T zhangsan -P agg -R 95
+```
+
+**参数说明**：
+
+| 参数 | 短选项 | 必选 | 默认值 | 说明 |
+|---|---|---|---|---|
+| `--framework` | `-F` | ✅ | — | `sglang` 或 `vllm` |
+| `--base-url` | `-u` | ✅ | — | 推理服务地址 |
+| `--model-path` | `-m` | ✅ | — | 模型路径 |
+| `--served-model-name` | `-n` | ✅ | — | 服务模型名 |
+| `--chip-type` | `-t` | ✅ | — | 芯片类型（CSV 列名后缀） |
+| `--tester` | `-T` | ✅ | — | 测试人员（用于报告目录层级和报告命名） |
+| `--pd` | `-P` | ✅ | — | PD部署模式: `agg`(非PD分离) 或 `disagg`(PD分离) |
+| `--report-dir` | `-r` | | `./{framework}_cache_reports` | 报告输出目录 |
+| `--concurrency` | `-c` | | `1,4,8,16,32,64,128` | 并发数列表 |
+| `--cache-hit-rate` | `-R` | | `90` | 缓存命中率百分比（1~99），前缀级命中 |
+| `--sleep` | `-s` | | `60` | 每组测试间隔（秒） |
+| `--describe` | `-d` | | — | 模型描述信息（可选，填入报告末尾单独章节） |
+| `--foreground` | `-f` | | 后台 | 前台执行 |
+| `--timeout` | | | `3600` | 每组测试超时秒数（超时自动终止并跳过，继续下一组） |
+
+核心命令（SGLang — 两阶段，前缀级命中）：
+
+```bash
+# 阶段 1：预热（串行，填共享前缀入缓存，不计量）
+python -m sglang.benchmark.serving \
+  --backend sglang-oai-chat \
+  --base-url "$BASE_URL" \
+  --model "$MODEL_PATH" \
+  --served-model-name "$SERVED_MODEL_NAME" \
+  --dataset-name generated-shared-prefix \
+  --gsp-num-groups 1                        \   # 只有1个共享前缀
+  --gsp-prompts-per-group 1                 \   # 1个请求预热
+  --gsp-system-prompt-len $prefix_len       \   # 共享前缀长度（命中部分）
+  --gsp-question-len $suffix_len            \   # 唯一后缀长度（未命中部分）
+  --gsp-output-len 1                        \   # output=1 快速完成
+  --num-prompts 1 --max-concurrency 1       \   # 串行1个请求
+  --seed 123                                    # 与阶段2相同 seed
+
+# 阶段 2：测试（目标并发，计量）
+python -m sglang.benchmark.serving \
+  --backend sglang-oai-chat \
+  --base-url "$BASE_URL" \
+  --model "$MODEL_PATH" \
+  --served-model-name "$SERVED_MODEL_NAME" \
+  --dataset-name generated-shared-prefix \
+  --gsp-num-groups 1                        \   # 同一共享前缀
+  --gsp-prompts-per-group $N_total          \   # N_total 个不同 question
+  --gsp-system-prompt-len $prefix_len       \   # 共享前缀（命中）
+  --gsp-question-len $suffix_len            \   # 唯一后缀（未命中）
+  --gsp-output-len $output_len              \   # 512
+  --num-prompts $N_total --max-concurrency $concurrency \
+  --seed 123 --cache-report                     # 相同 seed → 同一前缀 → 命中
+```
+
+核心命令（vLLM — 两阶段，前缀级命中）：
+
+```bash
+# 阶段 1：预热（串行，填共享前缀入缓存，不计量）
+vllm bench serve \
+  --backend openai-chat --endpoint /v1/chat/completions \
+  --base-url "$BASE_URL" \
+  --model "$MODEL_PATH" \
+  --served-model-name "$SERVED_MODEL_NAME" \
+  --dataset-name prefix_repetition \
+  --prefix-repetition-prefix-len $prefix_len   \   # 共享前缀长度（命中部分）
+  --prefix-repetition-suffix-len $suffix_len   \   # 唯一后缀长度（未命中部分）
+  --prefix-repetition-num-prefixes 1          \   # 只有1个共享前缀
+  --prefix-repetition-output-len 1             \   # output=1 快速完成
+  --num-prompts 1 --max-concurrency 1          \   # 串行1个请求
+  --trust-remote-code --temperature 0.7 --seed 123 \
+  --metric_percentiles 95,99 --ready-check-timeout-sec 30
+
+# 阶段 2：测试（目标并发，计量）
+vllm bench serve \
+  --backend openai-chat --endpoint /v1/chat/completions \
+  --base-url "$BASE_URL" \
+  --model "$MODEL_PATH" \
+  --served-model-name "$SERVED_MODEL_NAME" \
+  --dataset-name prefix_repetition \
+  --prefix-repetition-prefix-len $prefix_len   \   # 同一共享前缀（命中）
+  --prefix-repetition-suffix-len $suffix_len    \   # 每请求随机后缀（未命中）
+  --prefix-repetition-num-prefixes 1           \   # 只有1个共享前缀
+  --prefix-repetition-output-len $output_len    \   # 512
+  --num-prompts $N_total --max-concurrency $concurrency \
+  --trust-remote-code --temperature 0.7 --seed 123 \  # 相同 seed → 同一前缀 → 命中
+  --metric_percentiles 95,99 --ready-check-timeout-sec 30
+```
+
+### 3.6 测试结果表
+
+| 模型名称 | 推理框架 | 输入长度 | 输出长度 | 并发数 | Prefix Cache命中率 | 输入token吞吐量\_\<芯片类型\> (toks/s) | 输出token吞吐量\_\<芯片类型\> (toks/s) | 总token吞吐量\_\<芯片类型\> (toks/s) | Mean TTFT\_\<芯片类型\> (ms) | P99 TTFT\_\<芯片类型\> (ms) | Mean TPOT\_\<芯片类型\> (ms) |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| \<模型名\> | \<框架\> | 65536 | 512 | 1 | 90% | | | | | | |
+| \<模型名\> | \<框架\> | 65536 | 512 | 4 | 90% | | | | | | |
+| ... | ... | ... | ... | ... | ... | | | | | | |
+| \<模型名\> | \<框架\> | 65536 | 512 | 128 | 90% | | | | | | |
+
+> **命中率说明**：Prefix Cache命中率列 = 指定的缓存命中率百分比（默认 90%）。
+> 每个请求的前缀命中缓存，后缀（输入长度 - 共享前缀长度）未命中需 prefill。
+> 命中率越高，每请求 prefill 量越少，TTFT 越低且分布均匀。
+> SGLang 额外输出 `--cache-report` 实际缓存命中统计，可验证命中率是否符合预期。
+
+---
+
 ## 附录：文件清单
 
 ```
 general-benchmark-test/
 ├── Model_Inference_Benchmark_TestStrategy.md   本文档
-├── README.md                                   快速参考指南（三种测试对比、执行命令、参数说明）
+├── README.md                                   快速参考指南（四种测试对比、执行命令、参数说明）
 ├── benchmark_analysis_template.md              Markdown 报告模板
 ├── serve_command.sh.template                  模型服务启动命令模板（需复制为 serve_command.sh 填写真实命令）
 └── _scripts/
     ├── bench.sh                                第1章 benchmark 脚本（统一，-F 指定 sglang/vllm）
     ├── prefill_bench.sh                        第2章 纯 Prefill 脚本（统一，-F 指定 sglang/vllm）
     ├── decode_bench.sh                         第2章 纯 Decode 脚本（统一，SGLang 用 GSP / vLLM 用 prefix_repetition）
+    ├── cache_bench.sh                          第3章 指定缓存命中率脚本（前缀级命中，两阶段预热+测试）
     ├── decode_http_sweep.py                    第2章 纯 Decode HTTP 精确测量（零依赖，流式 SSE）【仅供参考，实际不使用】
     ├── collect_results.py                      ★ 自动收集日志结果生成 CSV（所有脚本结束后自动调用）
     └── csv_to_md.py                            ★ 将 CSV 转换为 Markdown 测试报告（自动调用）
@@ -1295,6 +1690,7 @@ general-benchmark-test/
 | `bench.sh` | `sglang` (benchmark.serving) / `vllm` (bench serve) | 统一脚本，`-F` 指定框架 |
 | `prefill_bench.sh` | `sglang` / `vllm` | output_len=1 变体，`-F` 指定框架 |
 | `decode_bench.sh` | `sglang` / `vllm` | SGLang 用 GSP / vLLM 用 prefix_repetition，`num_prompts = 10×并发` 增加样本量 |
+| `cache_bench.sh` | `sglang` / `vllm` | 前缀级命中：共享前缀(命中)+唯一后缀(未命中)，两阶段预热+测试，`-R` 指定命中率（默认 90%） |
 | `decode_http_sweep.py` | **仅 Python 标准库** | 零第三方依赖，跨框架/跨厂商可用【仅供参考，实际测试不使用】 |
 | `collect_results.py` | **仅 Python 标准库** | 扫描日志提取指标生成 CSV，所有脚本结束后自动调用 |
 | `csv_to_md.py` | **仅 Python 标准库** | 将 CSV 转换为 Markdown 测试报告（三部分：结果表格 + 服务启动命令 + 测试命令），自动读取 `serve_command.sh`，找不到或为空则报错 |
@@ -1305,6 +1701,21 @@ general-benchmark-test/
 
 | 测试场景 | SGLang 启动参数 | vLLM 启动参数 | 前缀缓存 | 数据集 | num_prompts |
 |---|---|---|---|---|---|
-| **第1章 Benchmark** | 默认 | 默认 | 开/关均可 | `random-ids` / `random` | = 并发数 |
+| **第1章 Benchmark** | `--disable-radix-cache` | `--no-enable-prefix-caching` | **关** | `random-ids` / `random` | = 并发数 |
 | **第2章 纯 Prefill** | `--disable-radix-cache` | `--no-enable-prefix-caching` | **关** | `random-ids` / `random` | = 5×并发数 |
 | **第2章 纯 Decode** | 默认（不加 `--disable-radix-cache`） | 默认（不加 `--no-enable-prefix-caching`） | **开** | `generated-shared-prefix` / `prefix_repetition` | = 10×并发数 |
+| **第3章 缓存命中率** | 默认（不加 `--disable-radix-cache`） | 默认（不加 `--no-enable-prefix-caching`） | **开** | `generated-shared-prefix` / `prefix_repetition` | N_total = 5×并发数 |
+
+### 快速参考：容错与超时
+
+所有四种脚本均内置三重保障，确保部分测试失败时仍能继续执行并生成报告：
+
+| 保障 | 机制 | 触发条件 | 行为 |
+|---|---|---|---|
+| 退出码检测 | `set +e` 捕获 | bench 命令崩溃（非零退出码） | 跳过该组，继续下一组 |
+| 日志错误扫描 | `check_log_errors` | 退出码 0 但日志含错误模式（`All requests failed`、`Traceback`、`ConnectionError` 等） | 标记失败，跳过该组 |
+| 超时保护 | `timeout $TIMEOUT` | bench 命令卡死不退出（返回码 124） | 超时终止，跳过该组 |
+
+- `--timeout` 参数控制超时秒数，默认 `3600`（1 小时），可按需调整
+- 无论多少组失败，循环结束后都会执行 `collect_results.py` + `csv_to_md.py` 生成报告
+- 已成功的日志数据完整收集，失败组不出现在 CSV 中
