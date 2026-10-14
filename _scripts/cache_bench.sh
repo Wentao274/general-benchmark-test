@@ -503,6 +503,7 @@ for concurrency in "${concurrency_list[@]}"; do
   log_file="${RUN_DIR}/cache_bs-${concurrency}_hit-${CACHE_HIT_RATE}_input-${INPUT_LEN}-output-${OUTPUT_LEN}.log"
   warmup_log="${RUN_DIR}/cache_bs-${concurrency}_hit-${CACHE_HIT_RATE}_warmup.log"
   jsonl_file="${RUN_DIR}/cache_bs-${concurrency}_hit-${CACHE_HIT_RATE}_input-${INPUT_LEN}-output-${OUTPUT_LEN}.jsonl"
+  warmup_jsonl="${RUN_DIR}/cache_bs-${concurrency}_hit-${CACHE_HIT_RATE}_warmup.jsonl"
 
   # ============================================================
   # 阶段 1：预热（不计量）
@@ -529,6 +530,7 @@ for concurrency in "${concurrency_list[@]}"; do
       --num-prompts 1 \
       --max-concurrency 1 \
       --seed "$SEED" \
+      --output-file "$warmup_jsonl" \
       > "$warmup_log" 2>&1
     warmup_status=$?
     set -e
@@ -700,7 +702,8 @@ for CONCURRENCY in ${CONC_LIST}; do
     --gsp-output-len 1 \\
     --num-prompts 1 \\
     --max-concurrency 1 \\
-    --seed ${SEED}
+    --seed ${SEED} \\
+    --output-file \$WARMUP_JSONL
   # 阶段2: 测试（目标并发，计量）
     $PYTHON_CMD -m sglang.benchmark.serving \\
     --backend sglang-oai-chat \\
@@ -716,7 +719,8 @@ for CONCURRENCY in ${CONC_LIST}; do
     --num-prompts \$N_TOTAL \\
     --max-concurrency \$CONCURRENCY \\
     --seed ${SEED} \\
-    --cache-report
+    --cache-report \\
+    --output-file \$JSONL_FILE
 done"
 elif [[ "$FRAMEWORK" == "vllm" ]]; then
   BENCH_COMMANDS="# 并发数列表: ${CONCURRENCY_STR}
