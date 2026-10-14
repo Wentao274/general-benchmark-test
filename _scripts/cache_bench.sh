@@ -296,13 +296,16 @@ FAIL_COUNT=0
 
 # ============================================================
 # 前缀缓存命中率实测（/metrics 计数器差值法）
-#   vLLM:   vllm:prefix_cache_queries / vllm:prefix_cache_hits
+#   vLLM:   vllm:prefix_cache_queries / vllm:prefix_cache_hits / vllm:external_prefix_cache_hits
+#           含 L1(GPU) / L3(external/LM cache) 两层命中统计
 #   SGLang: sglang:prefill_effective_tokens_total (mode=input/device_hit/host_hit/storage_hit)
 #           含 HiCache L1(GPU) / L2(CPU) / L3(DFKV) 全层命中统计
 # 测试前后各查询一次 /metrics，差值计算真实命中率，附加到日志
 # ============================================================
 
 # --- vLLM: 从服务端 /metrics 提取前缀缓存计数器（token 数，跨 engine 求和） ---
+# L1 (GPU): vllm:prefix_cache_queries/hits_total；L3 (external/LM cache): vllm:external_prefix_cache_hits_total
+# 输出 "<queries> <l1_hits> <l3_hits>"；无 LM Cache 时 l3_hits=0；/metrics 不可用输出 "N/A"
 get_vllm_prefix_cache_counters() {
   curl -s --max-time 10 "$BASE_URL/metrics" 2>/dev/null | awk '
     function val(line,   s, a) {
@@ -315,8 +318,9 @@ get_vllm_prefix_cache_counters() {
     }
     /^vllm:(gpu_)?prefix_cache_queries(_total)?[ \t{]/ { q += val($0); found = 1 }
     /^vllm:(gpu_)?prefix_cache_hits(_total)?[ \t{]/    { h += val($0); found = 1 }
+    /^vllm:external_prefix_cache_hits(_total)?[ \t{]/  { l3h += val($0) }
     END {
-      if (found) printf "%d %d", q, h
+      if (found) printf "%d %d %d", q, h, l3h
       else print "N/A"
     }
   ' || true
@@ -336,7 +340,8 @@ wait_vllm_prefix_cache_counters() {
 
 append_vllm_cache_report() {
   local log_file="$1" before="$2"
-  local after q_before h_before q_after h_after q_delta h_delta rate
+  local after q_b l1h_b l3h_b q_a l1h_a l3h_a
+  local q_d l1h_d l3h_d total_hit rate l1_rate l3_rate
 
   after="$(wait_vllm_prefix_cache_counters)"
 
@@ -344,37 +349,49 @@ append_vllm_cache_report() {
     echo ">>> [WARN] 无法从 ${BASE_URL}/metrics 获取前缀缓存计数器，本组命中率记为 N/A"
     {
       echo ""
-      echo "--------------- Prefix Cache Hit Details ---------------"
+      echo "--------------- Prefix Cache Hit Details (vLLM /metrics) ---------------"
       echo "Cache hit rate:                       N/A (prefix cache counters unavailable from server /metrics)"
     } >> "$log_file"
     return
   fi
 
-  read -r q_before h_before <<< "$before" || true
-  read -r q_after h_after <<< "$after" || true
-  q_delta=$(( q_after - q_before ))
-  h_delta=$(( h_after - h_before ))
+  read -r q_b l1h_b l3h_b <<< "$before" || true
+  read -r q_a l1h_a l3h_a <<< "$after" || true
+  q_d=$(( q_a - q_b ))
+  l1h_d=$(( l1h_a - l1h_b ))
+  l3h_d=$(( l3h_a - l3h_b ))
+  total_hit=$(( l1h_d + l3h_d ))
 
-  if [[ "$q_delta" -le 0 ]]; then
+  if [[ "$q_d" -le 0 ]]; then
     {
       echo ""
-      echo "--------------- Prefix Cache Hit Details ---------------"
+      echo "--------------- Prefix Cache Hit Details (vLLM /metrics) ---------------"
       echo "Prefix cache queries (tokens):        0"
-      echo "Prefix cache hits (tokens):           0"
+      echo "Total cache hit tokens:               0"
+      echo "Total prefill tokens:                 0"
       echo "Cache hit rate:                       0.0% (server reported no prefix cache activity)"
+      echo "L1 cache hit rate (device):           0.0%"
+      echo "L3 cache hit rate (external):         0.0%"
     } >> "$log_file"
     return
   fi
 
-  rate=$(awk -v h="$h_delta" -v q="$q_delta" 'BEGIN { printf "%.1f", h * 100 / q }')
+  rate=$(awk -v h="$total_hit" -v q="$q_d" 'BEGIN { printf "%.1f", h * 100 / q }')
+  l1_rate=$(awk -v h="$l1h_d" -v q="$q_d" 'BEGIN { printf "%.1f", h * 100 / q }')
+  l3_rate=$(awk -v h="$l3h_d" -v q="$q_d" 'BEGIN { printf "%.1f", h * 100 / q }')
   {
     echo ""
-    echo "--------------- Prefix Cache Hit Details ---------------"
-    echo "Prefix cache queries (tokens):        ${q_delta}"
-    echo "Prefix cache hits (tokens):           ${h_delta}"
+    echo "--------------- Prefix Cache Hit Details (vLLM /metrics) ---------------"
+    echo "Prefix cache queries (tokens):        ${q_d}"
+    echo "Prefix cache hits (L1 GPU):           ${l1h_d}"
+    echo "External prefix cache hits (L3 disk): ${l3h_d}"
+    echo "Total cache hit tokens:               ${total_hit}"
+    echo "Total prefill tokens:                 ${q_d}"
     echo "Cache hit rate:                       ${rate}%"
+    echo "L1 cache hit rate (device):           ${l1_rate}%"
+    echo "L3 cache hit rate (external):         ${l3_rate}%"
   } >> "$log_file"
-  echo ">>> Prefix cache hit rate: ${rate}% (hits ${h_delta} / queries ${q_delta} tokens)"
+  echo ">>> vLLM /metrics cache hit rate: ${rate}% (L1=${l1_rate}% L3=${l3_rate}%, hits ${total_hit} / queries ${q_d} tokens)"
 }
 
 # --- SGLang: 从服务端 /metrics 提取 prefill_effective_tokens_total 计数器（token 数，跨 rank 求和） ---
@@ -414,7 +431,7 @@ wait_sglang_cache_counters() {
 append_sglang_cache_report() {
   local log_file="$1" before="$2"
   local after inp_b dev_b host_b stor_b inp_a dev_a host_a stor_a
-  local inp_d dev_d host_d stor_d total_hit total_all rate
+  local inp_d dev_d host_d stor_d total_hit total_all rate l1_rate l2_rate l3_rate
 
   after="$(wait_sglang_cache_counters)"
 

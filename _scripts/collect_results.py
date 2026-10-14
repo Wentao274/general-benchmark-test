@@ -4,22 +4,23 @@
 
 支持四种测试类型的日志文件名：
   benchmark:  bench_bs-{N}_input_len-{IL}-output_len-{OL}.log        (缓存命中率=日志实测值, 无则 N/A)
-  prefill:    prefill_bs-{N}_input-{IL}.log                          (缓存命中率=日志实测值, 无则0%)
-  decode:     decode_bs-{N}_prefix-{PL}-output-{OL}.log              (缓存命中率=日志实测值, 无则100%)
-  cache:      cache_bs-{N}_hit-{HR}_input-{IL}-output-{OL}.log      (缓存命中率=HR%)
+  prefill:    prefill_bs-{N}_input-{IL}.log                          (缓存命中率=日志实测值, 无则 N/A)
+  decode:     decode_bs-{N}_prefix-{PL}-output-{OL}.log           (缓存命中率=日志实测值, 无则 N/A)
+  cache:      cache_bs-{N}_hit-{HR}_input-{IL}-output-{OL}.log     (缓存命中率=实测优先, 无则回退 HR)
 
 四种测试日志中的实测命中率来源（bench.sh / cache_bench.sh / prefill_bench.sh / decode_bench.sh 自动生成）：
-  SGLang: --cache-report 输出 L1 (radix cache) 命中率 → "Cache Hit Details" 统计段
+  SGLang: --cache-report 输出 L1 (radix cache) 命中率 → "Cache Hit Details" 统计段；
           脚本追加 /metrics 的 prefill_effective_tokens_total 计数器差值
           （含 HiCache L1/L2/L3）→ "Prefix Cache Hit Details (SGLang /metrics)" 统计段
-  vLLM:   脚本在测试前后查询服务端 /metrics 的 vllm:prefix_cache_* 计数器，
-          差值计算后附加 "Prefix Cache Hit Details" 统计段到日志
+  vLLM:   脚本在测试前后查询服务端 /metrics 的 vllm:prefix_cache_* 计数器（L1 GPU）
+          及 vllm:external_prefix_cache_hits（L3 external/LM Cache），
+          差值计算后附加 "Prefix Cache Hit Details (vLLM /metrics)" 统计段到日志
   两者均输出 "Cache hit rate: X.X%" 行，取日志中最后一个匹配（/metrics 值覆盖 --cache-report）。
   prefill/decode 无 --cache-report，仅有 /metrics 统计段（如服务端支持）。
 
 CSV 列根据框架条件化生成：
   SGLang: L1命中率 / L2命中率 / L3命中率（HiCache 分层，L1=device/GPU, L2=host/CPU, L3=storage/DFKV）
-  vLLM:   L1命中率（单层 prefix cache，无 L2/L3）
+  vLLM:   L1命中率 / L3命中率（L1-GPU prefix cache, L3-external/LM Cache；无 L2）
 
   用法:
   python3 collect_results.py --report-dir ./sglang_reports/model_name/YYYYMMDD_HHMMSS \
@@ -40,7 +41,7 @@ def csv_columns(chip_type, framework=""):
     """根据芯片类型和框架生成 CSV 表头列名。
 
     SGLang: L1命中率/L2命中率/L3命中率（HiCache 分层，含 L1-GPU/L2-CPU/L3-DFKV）
-    vLLM:   缓存命中率（无分层，仅总命中率）
+    vLLM:   L1命中率/L3命中率（L1-GPU prefix cache, L3-external/LM Cache；无 L2）
     """
     ct = chip_type or "芯片类型"
     base = [
@@ -53,7 +54,7 @@ def csv_columns(chip_type, framework=""):
     if framework == "sglang":
         cache_cols = ["L1命中率", "L2命中率", "L3命中率"]
     else:
-        cache_cols = ["L1命中率"]
+        cache_cols = ["L1命中率", "L3命中率"]
     perf_cols = [
         f"输入token吞吐量_{ct} (toks/s)",
         f"输出token吞吐量_{ct} (toks/s)",
@@ -134,7 +135,8 @@ PATTERNS = {
     "cache_hit_rate": re.compile(
         r'Cache hit rate:\s*([\d.]+)\s*%',
         re.IGNORECASE),
-    # SGLang HiCache 分层命中率（L1=device/GPU, L2=host/CPU, L3=storage/DFKV）
+    # HiCache 分层命中率（L1=device/GPU, L2=host/CPU, L3=storage 或 external）
+    # SGLang L3=(storage/DFKV)，vLLM L3=(external/LM Cache)
     "l1_hit_rate": re.compile(
         r'L1 cache hit rate \(device\):\s*([\d.]+)\s*%',
         re.IGNORECASE),
@@ -142,7 +144,7 @@ PATTERNS = {
         r'L2 cache hit rate \(host\):\s*([\d.]+)\s*%',
         re.IGNORECASE),
     "l3_hit_rate": re.compile(
-        r'L3 cache hit rate \(storage\):\s*([\d.]+)\s*%',
+        r'L3 cache hit rate \([^)]+\):\s*([\d.]+)\s*%',
         re.IGNORECASE),
 }
 
@@ -224,13 +226,18 @@ def scan_dir(report_dir, model_name, framework):
             if cache_hit_rate is None:
                 # benchmark 类型：取日志中实测的前缀缓存命中率，旧日志无数据时记 N/A
                 hit_rate = f"{measured:.1f}%" if measured is not None else "N/A"
-            else:
-                # cache/prefill/decode 类型：优先取日志中实测命中率，
-                # 日志无数据时回退到文件名中的指定命中率
+            elif test_type == "cache":
+                # cache 类型：优先取日志实测命中率，无数据时回退到文件名中的
+                # 指定值（-R 为用户指定的测试输入参数，回退显示设计值）
                 if measured is not None:
                     hit_rate = f"{measured:.1f}% (spec={cache_hit_rate}%)"
                 else:
                     hit_rate = f"{cache_hit_rate}%"
+            else:
+                # prefill/decode 类型：取日志实测命中率（验证缓存状态），
+                # 无数据时记 N/A——期望值 0%/100% 是待验证目标而非测量结果，
+                # 不作为回退值（避免伪造验证通过）
+                hit_rate = f"{measured:.1f}% (spec={cache_hit_rate}%)" if measured is not None else "N/A"
             row = {
                 "模型名称": model_name,
                 "推理框架": framework,
@@ -249,7 +256,8 @@ def scan_dir(report_dir, model_name, framework):
                 row["L2命中率"] = f"{metrics['l2_hit_rate']:.1f}%" if metrics["l2_hit_rate"] is not None else "N/A"
                 row["L3命中率"] = f"{metrics['l3_hit_rate']:.1f}%" if metrics["l3_hit_rate"] is not None else "N/A"
             else:
-                row["L1命中率"] = hit_rate
+                row["L1命中率"] = f"{metrics['l1_hit_rate']:.1f}%" if metrics["l1_hit_rate"] is not None else hit_rate
+                row["L3命中率"] = f"{metrics['l3_hit_rate']:.1f}%" if metrics["l3_hit_rate"] is not None else "N/A"
             rows.append(row)
     return rows, skipped
 
@@ -294,7 +302,7 @@ def main():
     if args.framework == "sglang":
         cache_cols = ["L1命中率", "L2命中率", "L3命中率"]
     else:
-        cache_cols = ["L1命中率"]
+        cache_cols = ["L1命中率", "L3命中率"]
     with open(args.out, "w", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f)
         w.writerow(cols)

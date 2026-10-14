@@ -18,7 +18,8 @@ set -euo pipefail
 #   7. 实测前缀缓存命中率并写入报告
 #      SGLang: --cache-report (L1/radix) + /metrics 的 prefill_effective_tokens_total
 #              计数器差值（含 HiCache L1/L2/L3），后者覆盖前者
-#      vLLM:   测试前后查询服务端 /metrics 的 vllm:prefix_cache_* 计数器取差值
+#      vLLM:   测试前后查询服务端 /metrics 的 vllm:prefix_cache_* 及
+#              vllm:external_prefix_cache_hits 计数器取差值（L1 GPU / L3 external）
 # ============================================================
 
 # --- 默认配置 ---
@@ -219,16 +220,23 @@ RUN_DIR="$REPORT_DIR/${TESTER}/${safe_model_name}/${RUN_TS}"
 mkdir -p "$RUN_DIR"
 
 # ============================================================
-# 前缀缓存命中率实测（用于校验服务端是否按要求关闭了前缀缓存）
-#   SGLang: bench 命令加 --cache-report，从请求响应统计真实命中 token 数
-#   vLLM:   bench serve 无缓存统计，改为测试前后查询服务端 /metrics 的
-#           vllm:prefix_cache_queries / vllm:prefix_cache_hits 计数器，
-#           差值即本组测试的查询/命中 token 数
-# 命中率写入 bench 日志（"Cache hit rate:" 行），collect_results.py 解析
+# 缓存命中率实测（用于校验服务端是否按要求关闭了前缀缓存）
+#   SGLang: 测试前后查询服务端 /metrics 的 sglang:prefill_effective_tokens_total
+#           计数器（mode=input/device_hit/host_hit/storage_hit），差值计算
+#           HiCache L1/L2/L3 三层命中率（--cache-report 仅统计 L1/radix）
+#   vLLM:   测试前后查询服务端 /metrics 的
+#           vllm:prefix_cache_queries / vllm:prefix_cache_hits 计数器（L1 GPU）
+#           及 vllm:external_prefix_cache_hits 计数器（L3 external/LM Cache），
+#           差值计算 L1/L3 两层命中率
+# 命中率写入 bench 日志（"Cache hit rate:" + "L1/L3 cache hit rate:" 行），
+# collect_results.py 解析
 # ============================================================
 
 # --- vLLM: 从服务端 /metrics 提取前缀缓存计数器（token 数，跨 engine 求和） ---
-# 输出 "<queries> <hits>"；/metrics 不可用或无该指标时输出 "N/A"
+# L1 (GPU prefix cache): vllm:prefix_cache_queries/hits_total
+# L3 (external/LM cache): vllm:external_prefix_cache_hits_total（L1 miss 后查 L3）
+# 输出 "<queries> <l1_hits> <l3_hits>"；/metrics 不可用或无该指标时输出 "N/A"
+# 注：无 LM Cache 的部署，l3_hits 为 0（不影响 L1 统计）
 get_vllm_prefix_cache_counters() {
   curl -s --max-time 10 "$BASE_URL/metrics" 2>/dev/null | awk '
     function val(line,   s, a) {
@@ -241,14 +249,15 @@ get_vllm_prefix_cache_counters() {
     }
     /^vllm:(gpu_)?prefix_cache_queries(_total)?[ \t{]/ { q += val($0); found = 1 }
     /^vllm:(gpu_)?prefix_cache_hits(_total)?[ \t{]/    { h += val($0); found = 1 }
+    /^vllm:external_prefix_cache_hits(_total)?[ \t{]/  { l3h += val($0) }
     END {
-      if (found) printf "%d %d", q, h
+      if (found) printf "%d %d %d", q, h, l3h
       else print "N/A"
     }
   ' || true
 }
 
-# --- vLLM: 等待计数器稳定（服务端统计有刷新延迟），输出稳定值 "<queries> <hits>" ---
+# --- vLLM: 等待计数器稳定（服务端统计有刷新延迟），输出稳定值 "<queries> <l1_hits> <l3_hits>" ---
 wait_vllm_prefix_cache_counters() {
   local prev cur i
   prev="$(get_vllm_prefix_cache_counters)"
@@ -261,11 +270,12 @@ wait_vllm_prefix_cache_counters() {
   echo "$prev"
 }
 
-# --- vLLM: 用测试前后计数器差值计算真实命中率，附加到 bench 日志 ---
-# 输出格式与 SGLang --cache-report 对齐（"Cache hit rate:" 行），便于统一解析
+# --- vLLM: 用测试前后计数器差值计算真实命中率（L1 GPU + L3 external），附加到 bench 日志 ---
+# 输出格式与 SGLang /metrics 报告对齐（"Cache hit rate:" + "L1/L3 cache hit rate:" 行），便于统一解析
 append_vllm_cache_report() {
   local log_file="$1" before="$2"
-  local after q_before h_before q_after h_after q_delta h_delta rate
+  local after q_b l1h_b l3h_b q_a l1h_a l3h_a
+  local q_d l1h_d l3h_d total_hit rate l1_rate l3_rate
 
   after="$(wait_vllm_prefix_cache_counters)"
 
@@ -273,38 +283,50 @@ append_vllm_cache_report() {
     echo ">>> [WARN] 无法从 ${BASE_URL}/metrics 获取前缀缓存计数器，本组命中率记为 N/A"
     {
       echo ""
-      echo "--------------- Prefix Cache Hit Details ---------------"
+      echo "--------------- Prefix Cache Hit Details (vLLM /metrics) ---------------"
       echo "Cache hit rate:                       N/A (prefix cache counters unavailable from server /metrics)"
     } >> "$log_file"
     return
   fi
 
-  read -r q_before h_before <<< "$before" || true
-  read -r q_after h_after <<< "$after" || true
-  q_delta=$(( q_after - q_before ))
-  h_delta=$(( h_after - h_before ))
+  read -r q_b l1h_b l3h_b <<< "$before" || true
+  read -r q_a l1h_a l3h_a <<< "$after" || true
+  q_d=$(( q_a - q_b ))
+  l1h_d=$(( l1h_a - l1h_b ))
+  l3h_d=$(( l3h_a - l3h_b ))
+  total_hit=$(( l1h_d + l3h_d ))
 
-  if [[ "$q_delta" -le 0 ]]; then
+  if [[ "$q_d" -le 0 ]]; then
     # 服务端未执行任何前缀缓存查询（前缀缓存已关闭时的典型表现，命中率即 0%）
     {
       echo ""
-      echo "--------------- Prefix Cache Hit Details ---------------"
+      echo "--------------- Prefix Cache Hit Details (vLLM /metrics) ---------------"
       echo "Prefix cache queries (tokens):        0"
-      echo "Prefix cache hits (tokens):           0"
+      echo "Total cache hit tokens:               0"
+      echo "Total prefill tokens:                 0"
       echo "Cache hit rate:                       0.0% (server reported no prefix cache activity)"
+      echo "L1 cache hit rate (device):           0.0%"
+      echo "L3 cache hit rate (external):         0.0%"
     } >> "$log_file"
     return
   fi
 
-  rate=$(awk -v h="$h_delta" -v q="$q_delta" 'BEGIN { printf "%.1f", h * 100 / q }')
+  rate=$(awk -v h="$total_hit" -v q="$q_d" 'BEGIN { printf "%.1f", h * 100 / q }')
+  l1_rate=$(awk -v h="$l1h_d" -v q="$q_d" 'BEGIN { printf "%.1f", h * 100 / q }')
+  l3_rate=$(awk -v h="$l3h_d" -v q="$q_d" 'BEGIN { printf "%.1f", h * 100 / q }')
   {
     echo ""
-    echo "--------------- Prefix Cache Hit Details ---------------"
-    echo "Prefix cache queries (tokens):        ${q_delta}"
-    echo "Prefix cache hits (tokens):           ${h_delta}"
+    echo "--------------- Prefix Cache Hit Details (vLLM /metrics) ---------------"
+    echo "Prefix cache queries (tokens):        ${q_d}"
+    echo "Prefix cache hits (L1 GPU):           ${l1h_d}"
+    echo "External prefix cache hits (L3 disk): ${l3h_d}"
+    echo "Total cache hit tokens:               ${total_hit}"
+    echo "Total prefill tokens:                 ${q_d}"
     echo "Cache hit rate:                       ${rate}%"
+    echo "L1 cache hit rate (device):           ${l1_rate}%"
+    echo "L3 cache hit rate (external):         ${l3_rate}%"
   } >> "$log_file"
-  echo ">>> Prefix cache hit rate: ${rate}% (hits ${h_delta} / queries ${q_delta} tokens)"
+  echo ">>> vLLM /metrics cache hit rate: ${rate}% (L1=${l1_rate}% L3=${l3_rate}%, hits ${total_hit} / queries ${q_d} tokens)"
 }
 
 # --- SGLang: 从服务端 /metrics 提取 prefill_effective_tokens_total 计数器（token 数，跨 rank 求和） ---
@@ -352,7 +374,7 @@ wait_sglang_cache_counters() {
 append_sglang_cache_report() {
   local log_file="$1" before="$2"
   local after inp_b dev_b host_b stor_b inp_a dev_a host_a stor_a
-  local inp_d dev_d host_d stor_d total_hit total_all rate
+  local inp_d dev_d host_d stor_d total_hit total_all rate l1_rate l2_rate l3_rate
 
   after="$(wait_sglang_cache_counters)"
 
@@ -424,7 +446,7 @@ echo "=== IO Combos:     ${io_combinations[*]}"
 echo "=== Chip Type:    ${CHIP_TYPE:-(未指定)}"
 echo "=== Tester:       $TESTER"
 echo "=== PD Mode:      $PD"
-echo "=== Cache Stats:  实测前缀缓存命中率（写入报告）"
+echo "=== Cache Stats:  实测缓存命中率（SGLang HiCache L1/L2/L3 / vLLM L1/L3，写入报告）"
 echo "=========================================="
 
 # --- 检测日志中的错误模式（即使 bench 退出码为 0 也可能全部请求失败） ---
@@ -599,7 +621,7 @@ elif [[ "$FRAMEWORK" == "vllm" ]]; then
   BENCH_COMMANDS="# 并发数列表: ${CONCURRENCY_STR}
 # IO 组合: ${IO_STR}
 # 注: 脚本在每组测试前后查询服务端 /metrics 的 vllm:prefix_cache_* 计数器，
-#     差值计算真实前缀缓存命中率并写入日志（报告中 Prefix Cache 命中率列为实测值）
+#     差值计算真实前缀缓存命中率并写入日志（报告中 L1命中率/L3命中率列为实测值）
 for CONCURRENCY in ${CONC_LIST}; do
   NUM_PROMPTS=\$CONCURRENCY
   for IO in ${IO_QUOTED}; do

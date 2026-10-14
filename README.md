@@ -48,7 +48,9 @@ general-benchmark-test/
   - `L2命中率`（host_hit，CPU 缓存）
   - `L3命中率`（storage_hit，DFKV 存储）
   - 三层命中率之和 = 总命中率；`--cache-report` 仅统计 L1（radix cache），`/metrics` 覆盖完整 HiCache 层级
-- **vLLM**：每组测试前后查询服务端 `/metrics` 的 `vllm:prefix_cache_queries` / `vllm:prefix_cache_hits` 计数器，差值计算单层命中率（`L1命中率`）
+- **vLLM**：每组测试前后查询服务端 `/metrics` 的 `vllm:prefix_cache_queries` / `vllm:prefix_cache_hits` 计数器（L1 GPU 缓存）和 `vllm:external_prefix_cache_hits` 计数器（L3 external/LM Cache），差值计算两层命中率：
+  - `L1命中率`（GPU prefix cache）
+  - `L3命中率`（external/LM Cache，L1 miss 后查 L3；无 LM Cache 部署时为 0%）
 
 服务端确实关闭缓存时，报告中命中率应为 `0%`；若明显大于 0%，说明服务端未按要求关闭缓存，结果不可比（显示 `N/A` 表示无法访问服务端 `/metrics`，未采集到）。
 
@@ -390,6 +392,7 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 - **Mean TTFT** = `Mean TTFT (ms)`（命中率越高，每请求 prefill 量越少，TTFT 越低且分布均匀）
 - **Mean TPOT** = `Mean TPOT (ms)`
 - SGLang 从 `/metrics` 提取 HiCache L1/L2/L3 三层命中率（`--cache-report` 仅覆盖 L1/radix，可对照验证）
+- vLLM 从 `/metrics` 提取 L1（GPU）/L3（external/LM Cache）两层命中率；`/metrics` 不可用时 L1 回退到 `-R` 指定值，L3 显示 N/A（SGLang 各层无数据均显示 N/A）
 
 ---
 
@@ -472,7 +475,7 @@ python3 _scripts/csv_to_md.py \
 | **数据集** | `random-ids`/`random` | 同左 | `generated-shared-prefix`/`prefix_repetition` | 同左 |
 | **num_prompts** | = 并发数 | = 5×并发数 | = 10×并发数 | N_total = 5×并发数 |
 | **核心指标** | 输入/输出/总吞吐量、TTFT、TPOT | prefill 吞吐量、TTFT | decode 吞吐量、TPOT | 输入/输出/总吞吐量、TTFT、TPOT |
-| **命中率列** | 实测（关缓存时应为 0%） | 0% | 100% | 实测（SGLang `/metrics` 三层 L1/L2/L3 / vLLM `/metrics` 单层 L1），无数据时回退到指定值（`-R`） |
+| **命中率列** | 实测（关缓存时应为 0%） | 实测（关缓存时应为 ≈0%，无数据记 N/A） | 实测（缓存命中应为 ≈100%，无数据记 N/A） | 实测（SGLang `/metrics` 三层 L1/L2/L3 / vLLM `/metrics` 两层 L1/L3），vLLM L1 无数据回退 `-R`，SGLang 各层无数据显示 N/A |
 | **超时保护** | `--timeout`（默认 3600s） | 同左 | 同左 | 同左 |
 
 > 四种脚本均支持 `--timeout`（默认 3600 秒）、容错跳过、失败后继续执行并生成部分报告。详见各脚本 `--help`。
