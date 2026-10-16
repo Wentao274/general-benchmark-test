@@ -60,8 +60,16 @@ def csv_columns(chip_type, framework=""):
         f"输出token吞吐量_{ct} (toks/s)",
         f"总token吞吐量_{ct} (toks/s)",
         f"Mean TTFT_{ct} (ms)",
+        f"Median TTFT_{ct} (ms)",
+        f"P90 TTFT_{ct} (ms)",
+        f"P95 TTFT_{ct} (ms)",
         f"P99 TTFT_{ct} (ms)",
         f"Mean TPOT_{ct} (ms)",
+        f"Median TPOT_{ct} (ms)",
+        f"P90 TPOT_{ct} (ms)",
+        f"P95 TPOT_{ct} (ms)",
+        f"P99 TPOT_{ct} (ms)",
+        f"请求吞吐量_{ct} (req/s)",
     ]
     return base + cache_cols + perf_cols
 
@@ -115,14 +123,38 @@ PATTERNS = {
     "total_throughput": re.compile(
         r'(?:Total token throughput|总\s*token\s*吞吐量)\s*[\（(]tok/s[\）)]\s*:\s*([\d.]+)',
         re.IGNORECASE),
+    "request_throughput": re.compile(
+        r'(?:Request throughput|请求\s*吞吐量)\s*[\（(]req/s[\）)]\s*:\s*([\d.]+)',
+        re.IGNORECASE),
     "mean_ttft": re.compile(
         r'(?:Mean\s*TTFT|平均\s*TTFT)\s*[\（(]ms[\）)]\s*:\s*([\d.]+)',
+        re.IGNORECASE),
+    "median_ttft": re.compile(
+        r'(?:Median\s*TTFT|中位数\s*TTFT)\s*[\（(]ms[\）)]\s*:\s*([\d.]+)',
+        re.IGNORECASE),
+    "p90_ttft": re.compile(
+        r'P90\s*TTFT\s*[\（(]ms[\）)]\s*:\s*([\d.]+)',
+        re.IGNORECASE),
+    "p95_ttft": re.compile(
+        r'P95\s*TTFT\s*[\（(]ms[\）)]\s*:\s*([\d.]+)',
         re.IGNORECASE),
     "p99_ttft": re.compile(
         r'P99\s*TTFT\s*[\（(]ms[\）)]\s*:\s*([\d.]+)',
         re.IGNORECASE),
     "mean_tpot": re.compile(
         r'(?:Mean\s*TPOT|平均\s*TPOT)\s*[\（(]ms[\）)]\s*:\s*([\d.]+)',
+        re.IGNORECASE),
+    "median_tpot": re.compile(
+        r'(?:Median\s*TPOT|中位数\s*TPOT)\s*[\（(]ms[\）)]\s*:\s*([\d.]+)',
+        re.IGNORECASE),
+    "p90_tpot": re.compile(
+        r'P90\s*TPOT\s*[\（(]ms[\）)]\s*:\s*([\d.]+)',
+        re.IGNORECASE),
+    "p95_tpot": re.compile(
+        r'P95\s*TPOT\s*[\（(]ms[\）)]\s*:\s*([\d.]+)',
+        re.IGNORECASE),
+    "p99_tpot": re.compile(
+        r'P99\s*TPOT\s*[\（(]ms[\）)]\s*:\s*([\d.]+)',
         re.IGNORECASE),
     # vLLM fallback: 总吞吐量 - 输出吞吐量
     "total_input_tokens": re.compile(
@@ -155,9 +187,17 @@ def parse_log_content(filepath):
         "input_throughput": "",
         "output_throughput": "",
         "total_throughput": "",
+        "request_throughput": "",
         "mean_ttft": "",
+        "median_ttft": "",
+        "p90_ttft": "",
+        "p95_ttft": "",
         "p99_ttft": "",
         "mean_tpot": "",
+        "median_tpot": "",
+        "p90_tpot": "",
+        "p95_tpot": "",
+        "p99_tpot": "",
         "cache_hit_rate": None,
         "l1_hit_rate": None,
         "l2_hit_rate": None,
@@ -248,8 +288,16 @@ def scan_dir(report_dir, model_name, framework):
                 "输出token吞吐量": metrics["output_throughput"],
                 "总token吞吐量": metrics["total_throughput"],
                 "Mean TTFT": metrics["mean_ttft"],
+                "Median TTFT": metrics["median_ttft"],
+                "P90 TTFT": metrics["p90_ttft"],
+                "P95 TTFT": metrics["p95_ttft"],
                 "P99 TTFT": metrics["p99_ttft"],
                 "Mean TPOT": metrics["mean_tpot"],
+                "Median TPOT": metrics["median_tpot"],
+                "P90 TPOT": metrics["p90_tpot"],
+                "P95 TPOT": metrics["p95_tpot"],
+                "P99 TPOT": metrics["p99_tpot"],
+                "请求吞吐量": metrics["request_throughput"],
             }
             if framework == "sglang":
                 row["L1命中率"] = f"{metrics['l1_hit_rate']:.1f}%" if metrics["l1_hit_rate"] is not None else "N/A"
@@ -321,8 +369,16 @@ def main():
                 r["输出token吞吐量"],
                 r["总token吞吐量"],
                 r["Mean TTFT"],
+                r["Median TTFT"],
+                r["P90 TTFT"],
+                r["P95 TTFT"],
                 r["P99 TTFT"],
                 r["Mean TPOT"],
+                r["Median TPOT"],
+                r["P90 TPOT"],
+                r["P95 TPOT"],
+                r["P99 TPOT"],
+                r["请求吞吐量"],
             ])
             w.writerow(row_vals)
 

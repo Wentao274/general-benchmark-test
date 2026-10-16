@@ -535,7 +535,7 @@ for concurrency in "${concurrency_list[@]}"; do
         --random-range-ratio 0.0 \
         --random-prefix-len 0 \
         --seed "$SEED" \
-        --metric_percentiles 95,99 \
+        --metric_percentiles 90,95,99 \
         --ready-check-timeout-sec 30 \
         > "$log_file" 2>&1
     fi
@@ -643,7 +643,7 @@ for CONCURRENCY in ${CONC_LIST}; do
       --random-range-ratio 0.0 \\
       --random-prefix-len 0 \\
       --seed ${SEED} \\
-      --metric_percentiles 95,99 \\
+      --metric_percentiles 90,95,99 \\
       --ready-check-timeout-sec 30
   done
 done"

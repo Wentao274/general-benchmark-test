@@ -33,7 +33,9 @@ general-benchmark-test/
 
 ## 1. 基础 Benchmark 测试
 
-测量端到端推理性能：输入/输出/总 token 吞吐量、TTFT、TPOT。
+测量端到端推理性能：输入/输出/总 token 吞吐量、请求吞吐量、TTFT 与 TPOT（各含 Mean/Median/P90/P95/P99）。
+
+> 延迟指标来源：SGLang bench 默认输出全部百分位；vLLM bench 由脚本统一传 `--metric_percentiles 90,95,99`（Mean/Median 始终输出）。
 
 ### 服务端要求
 
@@ -206,7 +208,7 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 ### 关注指标
 
 - **prefill 吞吐量** = 输入 token 吞吐量（SGLang 直接提取 `Input token throughput`；vLLM 用 `总吞吐量 - 输出吞吐量` 计算）
-- **TTFT** ≈ 端到端时间（无 decode，首 token 延迟即 prefill 耗时）
+- **TTFT** ≈ 端到端时间（无 decode，首 token 延迟即 prefill 耗时；报告含 Mean/Median/P90/P95/P99 TTFT）
 - `Output token throughput` 在 output_len=1 时等于 QPS，无参考意义
 
 ---
@@ -296,8 +298,8 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 ### 关注指标
 
 - **decode 吞吐量** = `Output token throughput (tok/s)`
-- **Mean TPOT** = `Mean TPOT (ms)`
-- **Mean TTFT** = `Mean TTFT (ms)`（应很小，若很大说明缓存未生效）
+- **TPOT** = `Mean/Median/P90/P95/P99 TPOT (ms)`
+- **TTFT** = `Mean/Median/P90/P95/P99 TTFT (ms)`（应很小，若很大说明缓存未生效）
 
 > num_prompts = 10 × 并发数，增加统计样本数，提高吞吐和延迟测量稳定性（bench 工具自带 warmup 预热前缀缓存）。
 
@@ -389,8 +391,9 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 ### 关注指标
 
 - **输入/输出/总吞吐量** = `Input/Output/Total token throughput (tok/s)`
-- **Mean TTFT** = `Mean TTFT (ms)`（命中率越高，每请求 prefill 量越少，TTFT 越低且分布均匀）
-- **Mean TPOT** = `Mean TPOT (ms)`
+- **请求吞吐量** = `Request throughput (req/s)`
+- **TTFT** = `Mean/Median/P90/P95/P99 TTFT (ms)`（命中率越高，每请求 prefill 量越少，TTFT 越低且分布均匀）
+- **TPOT** = `Mean/Median/P90/P95/P99 TPOT (ms)`
 - SGLang 从 `/metrics` 提取 HiCache L1/L2/L3 三层命中率（`--cache-report` 仅覆盖 L1/radix，可对照验证）
 - vLLM 从 `/metrics` 提取 L1（GPU）/L3（external/LM Cache）两层命中率；`/metrics` 不可用时 L1 回退到 `-R` 指定值，L3 显示 N/A（SGLang 各层无数据均显示 N/A）
 

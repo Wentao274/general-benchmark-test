@@ -552,7 +552,7 @@ for concurrency in "${concurrency_list[@]}"; do
       --trust-remote-code \
       --temperature 0.7 \
       --seed "$SEED" \
-      --metric_percentiles 95,99 \
+      --metric_percentiles 90,95,99 \
       --ready-check-timeout-sec 30 \
       > "$warmup_log" 2>&1
     warmup_status=$?
@@ -631,7 +631,7 @@ for concurrency in "${concurrency_list[@]}"; do
       --trust-remote-code \
       --temperature 0.7 \
       --seed "$SEED" \
-      --metric_percentiles 95,99 \
+      --metric_percentiles 90,95,99 \
       --ready-check-timeout-sec 30 \
       > "$log_file" 2>&1
     test_status=$?
@@ -749,7 +749,7 @@ for CONCURRENCY in ${CONC_LIST}; do
     --trust-remote-code \\
     --temperature 0.7 \\
     --seed ${SEED} \\
-    --metric_percentiles 95,99 \\
+    --metric_percentiles 90,95,99 \\
     --ready-check-timeout-sec 30
   # 阶段2: 测试（目标并发，计量）
   vllm bench serve \\
@@ -768,7 +768,7 @@ for CONCURRENCY in ${CONC_LIST}; do
     --trust-remote-code \\
     --temperature 0.7 \\
     --seed ${SEED} \\
-    --metric_percentiles 95,99 \\
+    --metric_percentiles 90,95,99 \\
     --ready-check-timeout-sec 30
 done"
 fi

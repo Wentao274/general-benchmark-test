@@ -63,18 +63,18 @@
 
 > **CSV 列按框架条件化**：SGLang 报告含 `L1命中率`、`L2命中率`、`L3命中率` 三列；vLLM 报告含 `L1命中率`、`L3命中率` 两列（无 L2）。以下表格展示 SGLang 格式。
 
-| 模型名称 | 推理框架 | 输入长度 | 输出长度 | 并发数 | L1命中率 | L2命中率 | L3命中率 | 输入token吞吐量\_\<芯片类型\> (toks/s) | 输出token吞吐量\_\<芯片类型\> (toks/s) | 总token吞吐量\_\<芯片类型\> (toks/s) | Mean TTFT\_\<芯片类型\> (ms) | P99 TTFT\_\<芯片类型\> (ms) | Mean TPOT\_\<芯片类型\> (ms) |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| \<模型名\> | sglang | 8192 | 512 | 1 | 0.0% | 0.0% | 0.0% | | | | | | |
-| \<模型名\> | sglang | 8192 | 512 | 4 | 0.0% | 0.0% | 0.0% | | | | | | |
-| \<模型名\> | sglang | 8192 | 512 | 8 | 0.0% | 0.0% | 0.0% | | | | | | |
-| ... | ... | ... | ... | ... | ... | ... | ... | | | | | | |
-| \<模型名\> | sglang | 65536 | 512 | 128 | 0.0% | 0.0% | 0.0% | | | | | | |
+| 模型名称 | 推理框架 | 输入长度 | 输出长度 | 并发数 | L1命中率 | L2命中率 | L3命中率 | 输入token吞吐量\_\<芯片类型\> (toks/s) | 输出token吞吐量\_\<芯片类型\> (toks/s) | 总token吞吐量\_\<芯片类型\> (toks/s) | Mean TTFT\_\<芯片类型\> (ms) | Median TTFT\_\<芯片类型\> (ms) | P90 TTFT\_\<芯片类型\> (ms) | P95 TTFT\_\<芯片类型\> (ms) | P99 TTFT\_\<芯片类型\> (ms) | Mean TPOT\_\<芯片类型\> (ms) | Median TPOT\_\<芯片类型\> (ms) | P90 TPOT\_\<芯片类型\> (ms) | P95 TPOT\_\<芯片类型\> (ms) | P99 TPOT\_\<芯片类型\> (ms) | 请求吞吐量\_\<芯片类型\> (req/s) |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| \<模型名\> | sglang | 8192 | 512 | 1 | 0.0% | 0.0% | 0.0% | | | | | | | | | | | | | | |
+| \<模型名\> | sglang | 8192 | 512 | 4 | 0.0% | 0.0% | 0.0% | | | | | | | | | | | | | | |
+| \<模型名\> | sglang | 8192 | 512 | 8 | 0.0% | 0.0% | 0.0% | | | | | | | | | | | | | | |
+| ... | ... | ... | ... | ... | ... | ... | ... | | | | | | | | | | | | | | |
+| \<模型名\> | sglang | 65536 | 512 | 128 | 0.0% | 0.0% | 0.0% | | | | | | | | | | | | | | |
 
 > vLLM 格式（L1 + L3 两列，无 L2）：
 
-| 模型名称 | 推理框架 | 输入长度 | 输出长度 | 并发数 | L1命中率 | L3命中率 | 输入token吞吐量\_\<芯片类型\> (toks/s) | 输出token吞吐量\_\<芯片类型\> (toks/s) | 总token吞吐量\_\<芯片类型\> (toks/s) | Mean TTFT\_\<芯片类型\> (ms) | P99 TTFT\_\<芯片类型\> (ms) | Mean TPOT\_\<芯片类型\> (ms) |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 模型名称 | 推理框架 | 输入长度 | 输出长度 | 并发数 | L1命中率 | L3命中率 | 输入token吞吐量\_\<芯片类型\> (toks/s) | 输出token吞吐量\_\<芯片类型\> (toks/s) | 总token吞吐量\_\<芯片类型\> (toks/s) | Mean TTFT\_\<芯片类型\> (ms) | Median TTFT\_\<芯片类型\> (ms) | P90 TTFT\_\<芯片类型\> (ms) | P95 TTFT\_\<芯片类型\> (ms) | P99 TTFT\_\<芯片类型\> (ms) | Mean TPOT\_\<芯片类型\> (ms) | Median TPOT\_\<芯片类型\> (ms) | P90 TPOT\_\<芯片类型\> (ms) | P95 TPOT\_\<芯片类型\> (ms) | P99 TPOT\_\<芯片类型\> (ms) | 请求吞吐量\_\<芯片类型\> (req/s) |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 
 **填写说明**：
 
@@ -85,12 +85,22 @@
 | **输入token吞吐量** | SGLang 直接提取；vLLM 用 `总吞吐量 - 输出吞吐量` 计算 | `Input token throughput (tok/s)` |
 | **输出token吞吐量** | 直接提取 | `Output token throughput (tok/s)` |
 | **总token吞吐量** | 直接提取 | `Total token throughput (tok/s)` |
+| **请求吞吐量** | 直接提取 | `Request throughput (req/s)` |
 | **Mean TTFT** | 直接提取 | `Mean TTFT (ms)` |
+| **Median TTFT** | 直接提取 | `Median TTFT (ms)` |
+| **P90 TTFT** | 直接提取 | `P90 TTFT (ms)` |
+| **P95 TTFT** | 直接提取 | `P95 TTFT (ms)` |
 | **P99 TTFT** | 直接提取 | `P99 TTFT (ms)` |
 | **Mean TPOT** | 直接提取 | `Mean TPOT (ms)` |
+| **Median TPOT** | 直接提取 | `Median TPOT (ms)` |
+| **P90 TPOT** | 直接提取 | `P90 TPOT (ms)` |
+| **P95 TPOT** | 直接提取 | `P95 TPOT (ms)` |
+| **P99 TPOT** | 直接提取 | `P99 TPOT (ms)` |
 | **L1命中率** | 日志实测（SGLang `/metrics` 的 `sglang:prefill_effective_tokens_total` 中 `mode="device_hit"` / vLLM `/metrics` 的 `vllm:prefix_cache_*` 计数器差值，由 `bench.sh` 自动写入日志） | `L1 cache hit rate (device):` (SGLang) / `Cache hit rate:` (vLLM) |
 | **L2命中率** | 日志实测（SGLang `/metrics` 的 `mode="host_hit"` 计数器差值；vLLM 无此指标，不输出此列） | `L2 cache hit rate (host):` |
 | **L3命中率** | 日志实测（SGLang `/metrics` 的 `mode="storage_hit"` 计数器差值 / vLLM `/metrics` 的 `vllm:external_prefix_cache_hits` 计数器差值；无该指标的框架/部署不输出此列） | `L3 cache hit rate (storage):` (SGLang) / `L3 cache hit rate (external):` (vLLM) |
+
+> **延迟百分位指标来源**：SGLang bench 默认输出 Mean/Median/P90/P95/P99；vLLM bench 由脚本统一传 `--metric_percentiles 90,95,99`（Mean/Median 始终输出）。纯 prefill 测试 output_len=1 无 decode 迭代，TPOT 各列为空。
 
 ### 1.4 测试脚本（统一）
 
@@ -602,7 +612,7 @@ for concurrency in "${concurrency_list[@]}"; do
         --random-range-ratio 0.0 \
         --random-prefix-len 0 \
         --seed "$SEED" \
-        --metric_percentiles 95,99 \
+        --metric_percentiles 90,95,99 \
         --ready-check-timeout-sec 30 \
         > "$log_file" 2>&1
     fi
@@ -689,7 +699,7 @@ for CONCURRENCY in ${CONC_LIST}; do
       --random-range-ratio 0.0 \\
       --random-prefix-len 0 \\
       --seed ${SEED} \\
-      --metric_percentiles 95,99 \\
+      --metric_percentiles 90,95,99 \\
       --ready-check-timeout-sec 30
   done
 done"
@@ -801,40 +811,77 @@ fi
 
 ```
 ============ Serving Benchmark Result ============
-Successful requests:      128
-Failed requests:            0
-Benchmark duration (s):  857.88
-Total input tokens:    131072
-Total generated tokens: 131072
-Request throughput (req/s):        0.15
-Input token throughput (tok/s):   152.64      ← 输入token吞吐量
-Output token throughput (tok/s):  152.64      ← 输出token吞吐量
-Total token throughput (tok/s):   305.28      ← 总token吞吐量
-Mean TTFT (ms):  321.42                        ← Mean TTFT
-Median TTFT (ms): 306.62
-P99 TTFT (ms):  1181.54
-Mean TPOT (ms):  9.25                          ← Mean TPOT
-Median TPOT (ms): 9.23
-P99 TPOT (ms):  9.89
+Backend:                                 sglang-oai-chat
+Traffic request rate:                    inf
+Max request concurrency:                 128
+Successful requests:                     128
+Benchmark duration (s):                  857.88
+Total input tokens:                      131072
+Total generated tokens:                  65536
+Request throughput (req/s):              0.15      ← 请求吞吐量
+Input token throughput (tok/s):          152.64    ← 输入token吞吐量
+Output token throughput (tok/s):          76.32     ← 输出token吞吐量
+Total token throughput (tok/s):           228.96    ← 总token吞吐量
+----------------End-to-End Latency----------------
+Mean E2E Latency (ms):                   5901.81
+Median E2E Latency (ms):                 5813.88
+P90 E2E Latency (ms):                    6152.67
+P95 E2E Latency (ms):                    6534.41
+P99 E2E Latency (ms):                    7143.71
+---------------Time to First Token----------------
+Mean TTFT (ms):                          321.42    ← Mean TTFT
+Median TTFT (ms):                        306.62    ← Median TTFT
+P90 TTFT (ms):                           902.17
+P95 TTFT (ms):                           1050.33
+P99 TTFT (ms):                           1181.54
+-----Time per Output Token (excl. 1st token)------
+Mean TPOT (ms):                          9.25      ← Mean TPOT
+Median TPOT (ms):                        9.23
+P90 TPOT (ms):                           9.61
+P95 TPOT (ms):                           9.75
+P99 TPOT (ms):                           9.89
+---------------Inter-Token Latency----------------
+Mean ITL (ms):                           9.20
+Median ITL (ms):                         9.15
+P90 ITL (ms):                            9.42
+P95 ITL (ms):                            9.68
+P99 ITL (ms):                            10.02
+Max ITL (ms):                            159.08
+==================================================
 ```
 
 #### vLLM `bench serve` 输出示例
 
 ```
-==== Serving Benchmark Result ===
-Successful requests:        128
-Failed requests:               0
-Benchmark duration (s):   857.88
-Total input tokens:        131072
-Total generated tokens:    131072
-Request throughput (req/s):     0.37
-Output token throughput (tok/s): 95.49       ← 输出token吞吐量
-Total token throughput (tok/s):  3915.14    ← 总token吞吐量
-
-Mean TTFT (ms):  321.42                       ← Mean TTFT
-P95 TTFT (ms):  982.37
-P99 TTFT (ms):  1181.54                       ← P99 TTFT
-Mean TPOT (ms):  9.25                         ← Mean TPOT
+============ Serving Benchmark Result ============
+Successful requests:                     128
+Failed requests:                         0
+Maximum request concurrency:             128
+Benchmark duration (s):                  857.88
+Total input tokens:                      131072
+Total generated tokens:                  65536
+Request throughput (req/s):              0.15      ← 请求吞吐量
+Output token throughput (tok/s):         95.49     ← 输出token吞吐量
+Peak output token throughput (tok/s):    120.00
+Total token throughput (tok/s):           246.48    ← 总token吞吐量
+---------------Time to First Token----------------
+Mean TTFT (ms):                          321.42    ← Mean TTFT
+Median TTFT (ms):                        306.62
+P90 TTFT (ms):                           902.37
+P95 TTFT (ms):                           982.37
+P99 TTFT (ms):                           1181.54   ← P99 TTFT
+-----Time per Output Token (excl. 1st token)------
+Mean TPOT (ms):                          9.25      ← Mean TPOT
+Median TPOT (ms):                        9.23
+P90 TPOT (ms):                           9.58
+P95 TPOT (ms):                           9.67
+P99 TPOT (ms):                           9.89
+---------------Inter-token Latency----------------
+Mean ITL (ms):                           9.20
+Median ITL (ms):                         9.15
+P90 ITL (ms):                            9.42
+P95 ITL (ms):                            9.68
+P99 ITL (ms):                            10.02
 ```
 
 > **注意**：vLLM 的 `bench serve` 不直接输出"输入 token 吞吐量"，`collect_results.py` 会自动用 `总吞吐量 - 输出吞吐量` 计算补全。
@@ -854,18 +901,18 @@ CSV 表头（`-t` 指定芯片类型后，列名带后缀）：
 
 ```
 SGLang:
-模型名称,推理框架,输入长度,输出长度,并发数,L1命中率,L2命中率,L3命中率,输入token吞吐量_<芯片类型> (toks/s),输出token吞吐量_<芯片类型> (toks/s),总token吞吐量_<芯片类型> (toks/s),Mean TTFT_<芯片类型> (ms),P99 TTFT_<芯片类型> (ms),Mean TPOT_<芯片类型> (ms)
+模型名称,推理框架,输入长度,输出长度,并发数,L1命中率,L2命中率,L3命中率,输入token吞吐量_<芯片类型> (toks/s),输出token吞吐量_<芯片类型> (toks/s),总token吞吐量_<芯片类型> (toks/s),Mean TTFT_<芯片类型> (ms),Median TTFT_<芯片类型> (ms),P90 TTFT_<芯片类型> (ms),P95 TTFT_<芯片类型> (ms),P99 TTFT_<芯片类型> (ms),Mean TPOT_<芯片类型> (ms),Median TPOT_<芯片类型> (ms),P90 TPOT_<芯片类型> (ms),P95 TPOT_<芯片类型> (ms),P99 TPOT_<芯片类型> (ms),请求吞吐量_<芯片类型> (req/s)
 
 vLLM:
-模型名称,推理框架,输入长度,输出长度,并发数,L1命中率,L3命中率,输入token吞吐量_<芯片类型> (toks/s),输出token吞吐量_<芯片类型> (toks/s),总token吞吐量_<芯片类型> (toks/s),Mean TTFT_<芯片类型> (ms),P99 TTFT_<芯片类型> (ms),Mean TPOT_<芯片类型> (ms)
+模型名称,推理框架,输入长度,输出长度,并发数,L1命中率,L3命中率,输入token吞吐量_<芯片类型> (toks/s),输出token吞吐量_<芯片类型> (toks/s),总token吞吐量_<芯片类型> (toks/s),Mean TTFT_<芯片类型> (ms),Median TTFT_<芯片类型> (ms),P90 TTFT_<芯片类型> (ms),P95 TTFT_<芯片类型> (ms),P99 TTFT_<芯片类型> (ms),Mean TPOT_<芯片类型> (ms),Median TPOT_<芯片类型> (ms),P90 TPOT_<芯片类型> (ms),P95 TPOT_<芯片类型> (ms),P99 TPOT_<芯片类型> (ms),请求吞吐量_<芯片类型> (req/s)
 ```
 
 CSV 示例：
 
 ```
-模型名称,推理框架,输入长度,输出长度,并发数,L1命中率,L2命中率,L3命中率,输入token吞吐量_H100 (toks/s),输出token吞吐量_H100 (toks/s),总token吞吐量_H100 (toks/s),Mean TTFT_H100 (ms),P99 TTFT_H100 (ms),Mean TPOT_H100 (ms)
-glm-5.2-fp8,sglang,8192,512,1,0.0%,0.0%,0.0%,152.64,95.40,248.04,521.44,1820.55,9.25
-glm-5.2-fp8,sglang,8192,512,128,0.0%,0.0%,0.0%,152.64,95.40,248.04,321.42,1181.54,9.25
+模型名称,推理框架,输入长度,输出长度,并发数,L1命中率,L2命中率,L3命中率,输入token吞吐量_H100 (toks/s),输出token吞吐量_H100 (toks/s),总token吞吐量_H100 (toks/s),Mean TTFT_H100 (ms),Median TTFT_H100 (ms),P90 TTFT_H100 (ms),P95 TTFT_H100 (ms),P99 TTFT_H100 (ms),Mean TPOT_H100 (ms),Median TPOT_H100 (ms),P90 TPOT_H100 (ms),P95 TPOT_H100 (ms),P99 TPOT_H100 (ms),请求吞吐量_H100 (req/s)
+glm-5.2-fp8,sglang,8192,512,1,0.0%,0.0%,0.0%,152.64,95.40,248.04,521.44,490.12,1650.30,1780.44,1820.55,9.25,9.20,9.42,9.58,9.89,0.19
+glm-5.2-fp8,sglang,8192,512,128,0.0%,0.0%,0.0%,152.64,95.40,248.04,321.42,306.62,902.17,1050.33,1181.54,9.25,9.23,9.61,9.75,9.89,0.15
 ```
 
 也可以**手动执行**收集脚本（如只收集已有日志）：
@@ -1249,19 +1296,19 @@ vllm bench serve \
   --num-prompts $num_prompts --max-concurrency $concurrency \   # num_prompts = 5 × 并发数
   --trust-remote-code --temperature 0.7 \
   --random-range-ratio 0.0 --seed 123 \
-  --metric_percentiles 95,99 --ready-check-timeout-sec 30
+  --metric_percentiles 90,95,99 --ready-check-timeout-sec 30
 ```
 
 #### 2.2.5 测试结果表
 
 > SGLang 格式（含 L1/L2/L3 三列）：
 
-| 模型名称 | 推理框架 | 输入长度 | 输出长度 | 并发数 | L1命中率 | L2命中率 | L3命中率 | 输入token吞吐量\_\<芯片类型\> (toks/s) | 输出token吞吐量\_\<芯片类型\> (toks/s) | 总token吞吐量\_\<芯片类型\> (toks/s) | Mean TTFT\_\<芯片类型\> (ms) | P99 TTFT\_\<芯片类型\> (ms) | Mean TPOT\_\<芯片类型\> (ms) |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| \<模型名\> | sglang | 65536 | 1 | 1 | 0% | 0% | 0% | | | | | | |
-| \<模型名\> | sglang | 65536 | 1 | 4 | 0% | 0% | 0% | | | | | | |
-| ... | ... | ... | ... | ... | ... | ... | ... | | | | | | |
-| \<模型名\> | sglang | 65536 | 1 | 128 | 0% | 0% | 0% | | | | | | |
+| 模型名称 | 推理框架 | 输入长度 | 输出长度 | 并发数 | L1命中率 | L2命中率 | L3命中率 | 输入token吞吐量\_\<芯片类型\> (toks/s) | 输出token吞吐量\_\<芯片类型\> (toks/s) | 总token吞吐量\_\<芯片类型\> (toks/s) | Mean TTFT\_\<芯片类型\> (ms) | Median TTFT\_\<芯片类型\> (ms) | P90 TTFT\_\<芯片类型\> (ms) | P95 TTFT\_\<芯片类型\> (ms) | P99 TTFT\_\<芯片类型\> (ms) | Mean TPOT\_\<芯片类型\> (ms) | Median TPOT\_\<芯片类型\> (ms) | P90 TPOT\_\<芯片类型\> (ms) | P95 TPOT\_\<芯片类型\> (ms) | P99 TPOT\_\<芯片类型\> (ms) | 请求吞吐量\_\<芯片类型\> (req/s) |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| \<模型名\> | sglang | 65536 | 1 | 1 | 0% | 0% | 0% | | | | | | | | | | | | | | |
+| \<模型名\> | sglang | 65536 | 1 | 4 | 0% | 0% | 0% | | | | | | | | | | | | | | |
+| ... | ... | ... | ... | ... | ... | ... | ... | | | | | | | | | | | | | | |
+| \<模型名\> | sglang | 65536 | 1 | 128 | 0% | 0% | 0% | | | | | | | | | | | | | | |
 
 > vLLM 格式（L1 + L3 两列）：命中率列应为 `0%`（服务端已关闭缓存）；无数据时记 N/A（不回退期望值）。
 
@@ -1293,9 +1340,9 @@ vllm bench serve \
    → 前缀命中缓存，prefill 近似为零
    → 全部耗时是 decode 迭代
 4. 指标（bench 工具直接提取）：
-   decode 吞吐量 = 日志 Output token throughput (tok/s)
-   TPOT = 日志 Mean TPOT (ms)
-   TTFT = 日志 Mean TTFT (ms)（应很小，因缓存命中）
+    decode 吞吐量 = 日志 Output token throughput (tok/s)
+    TPOT = 日志 Mean/Median/P90/P95/P99 TPOT (ms)
+    TTFT = 日志 Mean/Median/P90/P95/P99 TTFT (ms)（应很小，因缓存命中）
 ```
 
 **为什么方法 B 更贴近 PD 分离**：decode worker 接收的是 prefill worker 已算好的 KV cache。
@@ -1447,7 +1494,7 @@ vllm bench serve \
   --prefix-repetition-output-len $output_len    \   # 512
   --num-prompts $num_prompts --max-concurrency $concurrency \   # num_prompts = 10 × 并发数
   --trust-remote-code --temperature 0.7 --seed 123 \
-  --metric_percentiles 95,99 --ready-check-timeout-sec 30
+  --metric_percentiles 90,95,99 --ready-check-timeout-sec 30
 ```
 
 > **数据集选择原因**：`random-ids`/`random` + `random-prefix-len` 在 SGLang 中
@@ -1532,12 +1579,12 @@ decode_tok_s,ttft_ms,tpot_ms,note
 
 > SGLang 格式（含 L1/L2/L3 三列）：
 
-| 模型名称 | 推理框架 | 输入长度 | 输出长度 | 并发数 | L1命中率 | L2命中率 | L3命中率 | 输入token吞吐量\_\<芯片类型\> (toks/s) | 输出token吞吐量\_\<芯片类型\> (toks/s) | 总token吞吐量\_\<芯片类型\> (toks/s) | Mean TTFT\_\<芯片类型\> (ms) | P99 TTFT\_\<芯片类型\> (ms) | Mean TPOT\_\<芯片类型\> (ms) |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| \<模型名\> | sglang | 1 | 512 | 1 | 100% | 0% | 0% | | | | | | |
-| \<模型名\> | sglang | 1 | 512 | 4 | 100% | 0% | 0% | | | | | | |
-| ... | ... | ... | ... | ... | ... | ... | ... | | | | | | |
-| \<模型名\> | sglang | 1 | 512 | 128 | 100% | 0% | 0% | | | | | | |
+| 模型名称 | 推理框架 | 输入长度 | 输出长度 | 并发数 | L1命中率 | L2命中率 | L3命中率 | 输入token吞吐量\_\<芯片类型\> (toks/s) | 输出token吞吐量\_\<芯片类型\> (toks/s) | 总token吞吐量\_\<芯片类型\> (toks/s) | Mean TTFT\_\<芯片类型\> (ms) | Median TTFT\_\<芯片类型\> (ms) | P90 TTFT\_\<芯片类型\> (ms) | P95 TTFT\_\<芯片类型\> (ms) | P99 TTFT\_\<芯片类型\> (ms) | Mean TPOT\_\<芯片类型\> (ms) | Median TPOT\_\<芯片类型\> (ms) | P90 TPOT\_\<芯片类型\> (ms) | P95 TPOT\_\<芯片类型\> (ms) | P99 TPOT\_\<芯片类型\> (ms) | 请求吞吐量\_\<芯片类型\> (req/s) |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| \<模型名\> | sglang | 1 | 512 | 1 | 100% | 0% | 0% | | | | | | | | | | | | | | |
+| \<模型名\> | sglang | 1 | 512 | 4 | 100% | 0% | 0% | | | | | | | | | | | | | | |
+| ... | ... | ... | ... | ... | ... | ... | ... | | | | | | | | | | | | | | |
+| \<模型名\> | sglang | 1 | 512 | 128 | 100% | 0% | 0% | | | | | | | | | | | | | | |
 
 > vLLM 格式（L1 + L3 两列）：命中率列应为 `100%`（缓存已开启，前缀全部命中）；无数据时记 N/A（不回退期望值）。
 
@@ -1546,8 +1593,8 @@ decode_tok_s,ttft_ms,tpot_ms,note
 | 指标 | bench 工具（collect_results.py 自动提取） | HTTP 脚本（decode_http_sweep.py 自动计算） |
 |---|---|---|
 | **decode 吞吐量** | 日志 `Output token throughput (tok/s)` | `Σ output_tokens / wall_time` |
-| **Mean TPOT** | 日志 `Mean TPOT (ms)` | `(末chunk时间 - 首chunk时间) / (output_len - 1)` |
-| **Mean TTFT** | 日志 `Mean TTFT (ms)` | 流式首 chunk 延迟（ms） |
+| **TPOT** | 日志 `Mean/Median/P90/P95/P99 TPOT (ms)` | `(末chunk时间 - 首chunk时间) / (output_len - 1)` |
+| **TTFT** | 日志 `Mean/Median/P90/P95/P99 TTFT (ms)` | 流式首 chunk 延迟（ms） |
 
 > **注意**：前缀缓存命中时 TTFT 应很小；若 TTFT 很大说明缓存未生效，需检查服务端是否开启了前缀缓存。
 
@@ -1785,7 +1832,7 @@ vllm bench serve \
   --prefix-repetition-output-len 1             \   # output=1 快速完成
   --num-prompts 1 --max-concurrency 1          \   # 串行1个请求
   --trust-remote-code --temperature 0.7 --seed 123 \
-  --metric_percentiles 95,99 --ready-check-timeout-sec 30
+  --metric_percentiles 90,95,99 --ready-check-timeout-sec 30
 
 # 阶段 2：测试（目标并发，计量）
 vllm bench serve \
@@ -1800,19 +1847,19 @@ vllm bench serve \
   --prefix-repetition-output-len $output_len    \   # 512
   --num-prompts $N_total --max-concurrency $concurrency \
   --trust-remote-code --temperature 0.7 --seed 123 \  # 相同 seed → 同一前缀 → 命中
-  --metric_percentiles 95,99 --ready-check-timeout-sec 30
+  --metric_percentiles 90,95,99 --ready-check-timeout-sec 30
 ```
 
 ### 3.6 测试结果表
 
 > SGLang 格式（含 L1/L2/L3 三列）：
 
-| 模型名称 | 推理框架 | 输入长度 | 输出长度 | 并发数 | L1命中率 | L2命中率 | L3命中率 | 输入token吞吐量\_\<芯片类型\> (toks/s) | 输出token吞吐量\_\<芯片类型\> (toks/s) | 总token吞吐量\_\<芯片类型\> (toks/s) | Mean TTFT\_\<芯片类型\> (ms) | P99 TTFT\_\<芯片类型\> (ms) | Mean TPOT\_\<芯片类型\> (ms) |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| \<模型名\> | sglang | 65536 | 512 | 1 | 90% | 0% | 0% | | | | | | |
-| \<模型名\> | sglang | 65536 | 512 | 4 | 90% | 0% | 0% | | | | | | |
-| ... | ... | ... | ... | ... | ... | ... | ... | | | | | | |
-| \<模型名\> | sglang | 65536 | 512 | 128 | 90% | 0% | 0% | | | | | | |
+| 模型名称 | 推理框架 | 输入长度 | 输出长度 | 并发数 | L1命中率 | L2命中率 | L3命中率 | 输入token吞吐量\_\<芯片类型\> (toks/s) | 输出token吞吐量\_\<芯片类型\> (toks/s) | 总token吞吐量\_\<芯片类型\> (toks/s) | Mean TTFT\_\<芯片类型\> (ms) | Median TTFT\_\<芯片类型\> (ms) | P90 TTFT\_\<芯片类型\> (ms) | P95 TTFT\_\<芯片类型\> (ms) | P99 TTFT\_\<芯片类型\> (ms) | Mean TPOT\_\<芯片类型\> (ms) | Median TPOT\_\<芯片类型\> (ms) | P90 TPOT\_\<芯片类型\> (ms) | P95 TPOT\_\<芯片类型\> (ms) | P99 TPOT\_\<芯片类型\> (ms) | 请求吞吐量\_\<芯片类型\> (req/s) |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| \<模型名\> | sglang | 65536 | 512 | 1 | 90% | 0% | 0% | | | | | | | | | | | | | | |
+| \<模型名\> | sglang | 65536 | 512 | 4 | 90% | 0% | 0% | | | | | | | | | | | | | | |
+| ... | ... | ... | ... | ... | ... | ... | ... | | | | | | | | | | | | | | |
+| \<模型名\> | sglang | 65536 | 512 | 128 | 90% | 0% | 0% | | | | | | | | | | | | | | |
 
 > vLLM 格式（L1 + L3 两列）：L1命中率 / L3命中率 = 实测值（`/metrics` 计数器差值）。
 

@@ -512,7 +512,7 @@ for prefix_len in "${prefix_lens[@]}"; do
           --trust-remote-code \
           --temperature 0.7 \
           --seed "$SEED" \
-          --metric_percentiles 95,99 \
+          --metric_percentiles 90,95,99 \
           --ready-check-timeout-sec 30 \
           > "$log_file" 2>&1
       fi
@@ -607,7 +607,7 @@ for PREFIX_LEN in ${PREFIX_LIST}; do
         --trust-remote-code \\
         --temperature 0.7 \\
         --seed ${SEED} \\
-        --metric_percentiles 95,99 \\
+        --metric_percentiles 90,95,99 \\
         --ready-check-timeout-sec 30
     done
   done
