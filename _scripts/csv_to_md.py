@@ -3,6 +3,7 @@
 """csv_to_md.py -- 将 collect_results.py 生成的 CSV 转换为 Markdown 测试报告
 
 报告分四部分：
+  0. 标题注明测试类型（通过 --test-type 传入，如 "纯 Decode 测试"）
   1. 测试结果表格（从 CSV 转换）
   2. 模型服务启动命令（从 serve_command.sh 读取）
   3. Benchmark 测试命令（从 --bench-command 参数传入）
@@ -14,6 +15,7 @@
   python3 csv_to_md.py \
       --csv results.csv \
       --output report.md \
+      --test-type "纯 Decode 测试" \
       --bench-command "bench.sh -F sglang -u http://... -m /path -n name -t H100" \
       --serve-command-file serve_command.sh \
       --describe "GLM-5.2 FP8 量化版本，8卡 TP 部署"
@@ -21,6 +23,7 @@
   如果不指定 --output，则输出到 CSV 同目录下的 {csv_basename}_report.md
   如果不指定 --serve-command-file，则默认使用脚本同目录下的 ../serve_command.sh
   如果不指定 --describe，则报告中不包含模型描述章节
+  如果不指定 --test-type，则标题不显示测试类型（兼容旧用法）
 """
 from __future__ import annotations
 
@@ -101,8 +104,13 @@ def read_serve_command(serve_cmd_path: str) -> str:
 
 def generate_report(csv_path: str, serve_cmd_path: str,
                     bench_command: str, output_path: str,
-                    describe: str = "") -> None:
+                    describe: str = "", test_type: str = "") -> None:
     """生成完整的 Markdown 报告。"""
+
+    # --- 第零部分：标题（注明测试类型） ---
+    title = "# 推理性能 Benchmark 测试报告"
+    if test_type:
+        title = "# 推理性能 Benchmark 测试报告（%s）" % test_type
 
     # --- 第一部分：测试结果表格 ---
     md_table = csv_to_markdown_table(csv_path)
@@ -115,7 +123,7 @@ def generate_report(csv_path: str, serve_cmd_path: str,
 
     # --- 组装报告 ---
     report = []
-    report.append("# 推理性能 Benchmark 测试报告\n")
+    report.append(title + "\n")
     report.append("> 本报告由 `csv_to_md.py` 自动生成，请勿手动编辑。\n")
     report.append("---\n")
 
@@ -172,6 +180,8 @@ def main():
                     help="实际执行的 benchmark 测试命令")
     ap.add_argument("--describe", default="",
                     help="模型描述信息（可选，填入报告末尾单独章节）")
+    ap.add_argument("--test-type", default="",
+                    help="测试类型名称，写入报告标题括号（如 \"纯 Decode 测试\"）")
     ap.add_argument("--serve-command-file", default="",
                     help="模型服务启动命令文件路径（默认: 脚本上级目录的 serve_command.sh）")
 
@@ -196,7 +206,7 @@ def main():
         output_path = os.path.join(csv_dir, csv_basename + "_report.md")
 
     generate_report(args.csv, serve_cmd_path, args.bench_command, output_path,
-                   args.describe)
+                    args.describe, args.test_type)
 
 
 if __name__ == "__main__":

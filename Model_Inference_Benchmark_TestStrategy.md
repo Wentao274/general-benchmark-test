@@ -726,12 +726,14 @@ if [[ -n "$DESCRIBE" ]]; then
   python3 "${SCRIPT_DIR}/csv_to_md.py" \
     --csv "$CSV_FILE" \
     --output "$MD_FILE" \
+    --test-type "基础 Benchmark 测试" \
     --bench-command "$BENCH_COMMANDS" \
     --describe "$DESCRIBE"
 else
   python3 "${SCRIPT_DIR}/csv_to_md.py" \
     --csv "$CSV_FILE" \
     --output "$MD_FILE" \
+    --test-type "基础 Benchmark 测试" \
     --bench-command "$BENCH_COMMANDS"
 fi
 ```
@@ -893,7 +895,7 @@ P99 ITL (ms):                            10.02
 
 #### 自动收集结果（测试完成后自动执行）
 
-所有 bench 脚本在测试结束后会**自动调用** `collect_results.py` 扫描日志目录，生成汇总 CSV，随后**自动调用** `csv_to_md.py` 将 CSV 转换为 Markdown 测试报告，无需手动操作。
+所有 bench 脚本在测试结束后会**自动调用** `collect_results.py` 扫描日志目录，生成汇总 CSV，随后**自动调用** `csv_to_md.py` 将 CSV 转换为 Markdown 测试报告（标题括号注明测试类型），无需手动操作。
 
 生成的文件位置（`{TS}` 为运行时间戳 `YYYYMMDD_HHMMSS`，避免重复执行时覆盖）：
 - **Benchmark**：`{report-dir}/{tester}/{model_name}/{TS}/bench_bs-{N}_input_len-{IL}-output_len-{OL}.log` → `results.csv` → `{tester}_{model_name}_{chip_type}_{framework}_{pd}_bench_{TS}.md`
@@ -943,7 +945,7 @@ python3 _scripts/collect_results.py \
 
 #### 自动生成 Markdown 测试报告
 
-CSV 生成后，脚本会**自动调用** `csv_to_md.py` 将 CSV 转换为 Markdown 测试报告。报告分三部分：
+CSV 生成后，脚本会**自动调用** `csv_to_md.py` 将 CSV 转换为 Markdown 测试报告。报告**标题括号注明测试类型**（由各脚本传入：基础 Benchmark 测试 / 纯 Prefill 测试 / 纯 Decode 测试 / 指定缓存命中率测试，不显示脚本名），正文分三部分：
 
 | 部分 | 内容来源 | 说明 |
 |---|---|---|
@@ -960,6 +962,7 @@ CSV 生成后，脚本会**自动调用** `csv_to_md.py` 将 CSV 转换为 Markd
 python3 _scripts/csv_to_md.py \
   --csv ./sglang_reports/zhangsan/glm-5.2-fp8/20260831_143022/results.csv \
   --output ./sglang_reports/zhangsan/glm-5.2-fp8/20260831_143022/zhangsan_glm-5.2-fp8_H100_sglang_agg_bench_20260831_143022.md \
+  --test-type "基础 Benchmark 测试" \
   --bench-command "python -m sglang.benchmark.serving --backend sglang-oai-chat --base-url http://127.0.0.1:8080 ..."
 ```
 
@@ -1914,9 +1917,9 @@ general-benchmark-test/
 | `cache_bench.sh` | `sglang` / `vllm` | 前缀级命中：共享前缀(命中)+唯一后缀(未命中)，两阶段预热+测试，`-R` 指定命中率（默认 90%） |
 | `decode_http_sweep.py` | **仅 Python 标准库** | 零第三方依赖，跨框架/跨厂商可用【仅供参考，实际测试不使用】 |
 | `collect_results.py` | **仅 Python 标准库** | 扫描日志提取指标生成 CSV，所有脚本结束后自动调用 |
-| `csv_to_md.py` | **仅 Python 标准库** | 将 CSV 转换为 Markdown 测试报告（三部分：结果表格 + 服务启动命令 + 测试命令），自动读取 `serve_command.sh`，找不到或为空则报错 |
+| `csv_to_md.py` | **仅 Python 标准库** | 将 CSV 转换为 Markdown 测试报告（标题注明测试类型 + 三部分：结果表格 / 服务启动命令 / 测试命令），自动读取 `serve_command.sh`，找不到或为空则报错 |
 | `serve_command.sh.template` | — | 模板文件，执行者复制为 `serve_command.sh` 并填写真实模型服务启动命令 |
-| `benchmark_analysis_template.md` | — | Markdown 报告模板，包含三部分示例（结果表格 / 服务启动命令 / 测试命令） |
+| `benchmark_analysis_template.md` | — | Markdown 报告模板，标题注明测试类型，包含三部分示例（结果表格 / 服务启动命令 / 测试命令） |
 
 ### 快速参考：服务端配置对照
 

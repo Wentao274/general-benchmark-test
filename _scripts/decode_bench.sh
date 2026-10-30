@@ -630,11 +630,13 @@ if [[ -n "$DESCRIBE" ]]; then
   "$PYTHON_CMD" "${SCRIPT_DIR}/csv_to_md.py" \
     --csv "$CSV_FILE" \
     --output "$MD_FILE" \
+    --test-type "纯 Decode 测试" \
     --bench-command "$BENCH_COMMANDS" \
     --describe "$DESCRIBE"
 else
   "$PYTHON_CMD" "${SCRIPT_DIR}/csv_to_md.py" \
     --csv "$CSV_FILE" \
     --output "$MD_FILE" \
+    --test-type "纯 Decode 测试" \
     --bench-command "$BENCH_COMMANDS"
 fi

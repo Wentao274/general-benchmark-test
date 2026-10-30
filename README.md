@@ -16,7 +16,7 @@ general-benchmark-test/
     ├── cache_bench.sh                          指定缓存命中率测试脚本
     ├── decode_http_sweep.py                    纯 Decode HTTP 精确测量【仅供参考，实际不使用】
     ├── collect_results.py                      日志收集 → CSV
-    └── csv_to_md.py                            CSV → Markdown 报告
+    └── csv_to_md.py                            CSV → Markdown 报告（标题注明测试类型）
 ```
 
 ## 前置条件
@@ -415,7 +415,7 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 bench 工具日志 → collect_results.py → CSV → csv_to_md.py → Markdown 报告
 ```
 
-Markdown 报告分三部分：
+Markdown 报告**标题括号注明测试类型**（由各脚本自动传入：基础 Benchmark 测试 / 纯 Prefill 测试 / 纯 Decode 测试 / 指定缓存命中率测试，不显示脚本名），正文分三部分：
 
 | 部分 | 内容来源 |
 |---|---|
@@ -470,6 +470,7 @@ python3 _scripts/collect_results.py \
 python3 _scripts/csv_to_md.py \
   --csv ./sglang_reports/zhangsan/glm-5.2-fp8/20260831_143022/results.csv \
   --output ./sglang_reports/zhangsan/glm-5.2-fp8/20260831_143022/zhangsan_glm-5.2-fp8_H100_sglang_agg_bench_20260831_143022.md \
+  --test-type "基础 Benchmark 测试" \
   --bench-command "python -m sglang.benchmark.serving --backend sglang-oai-chat ..."
 ```
 
@@ -480,6 +481,7 @@ python3 _scripts/csv_to_md.py \
 | | 基础 Benchmark | 纯 Prefill | 纯 Decode | 指定缓存命中率 |
 |---|---|---|---|---|
 | **脚本** | `bench.sh` | `prefill_bench.sh` | `decode_bench.sh` | `cache_bench.sh` |
+| **报告标题** | （基础 Benchmark 测试） | （纯 Prefill 测试） | （纯 Decode 测试） | （指定缓存命中率测试） |
 | **测试目标** | 端到端性能 | prefill 前向算力 | decode 迭代性能 | 指定前缀命中率下推理性能 |
 | **output_len** | 512 | 1（固定） | 512 | 512 |
 | **前缀缓存** | **关** | **关** | **开** | **开** |

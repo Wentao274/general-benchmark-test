@@ -789,11 +789,13 @@ if [[ -n "$DESCRIBE" ]]; then
   "$PYTHON_CMD" "${SCRIPT_DIR}/csv_to_md.py" \
     --csv "$CSV_FILE" \
     --output "$MD_FILE" \
+    --test-type "指定缓存命中率测试" \
     --bench-command "$BENCH_COMMANDS" \
     --describe "$DESCRIBE"
 else
   "$PYTHON_CMD" "${SCRIPT_DIR}/csv_to_md.py" \
     --csv "$CSV_FILE" \
     --output "$MD_FILE" \
+    --test-type "指定缓存命中率测试" \
     --bench-command "$BENCH_COMMANDS"
 fi
