@@ -113,7 +113,7 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 | `--base-url` | `-u` | ✅ | — | 推理服务地址 |
 | `--model-path` | `-m` | ✅ | — | 模型路径 |
 | `--served-model-name` | `-n` | ✅ | — | 服务模型名 |
-| `--concurrency` | `-c` | | `1,4,8,16,32,64,128` | 并发数列表 |
+| `--concurrency` | `-c` | | `1,4,8,16,32,64,128` | 并发数列表（num_prompts = 并发数，请求数与并发数相同） |
 | `--io-combinations` | `-i` | | `8192 512,32768 512,65536 512` | IO 组合（逗号分隔，每组 `"输入 输出"`） |
 | `--chip-type` | `-t` | ✅ | — | 芯片类型（CSV 列名后缀，如 `H100`） |
 | `--tester` | `-T` | ✅ | — | 测试人员（用于报告目录层级和报告命名） |
@@ -193,7 +193,7 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 | `--model-path` | `-m` | ✅ | — | 模型路径 |
 | `--served-model-name` | `-n` | ✅ | — | 服务模型名 |
 | `--io-combinations` | `-i` | | `65536 1` | IO 组合（逗号分隔，每组 `"输入 输出"`） |
-| `--concurrency` | `-c` | | `1,4,8,16,32,64,128` | 并发数列表 |
+| `--concurrency` | `-c` | | `1,4,8,16,32,64,128` | 并发数列表（num_prompts = 5×并发数） |
 | `--chip-type` | `-t` | ✅ | — | 芯片类型（CSV 列名后缀） |
 | `--tester` | `-T` | ✅ | — | 测试人员（用于报告目录层级和报告命名） |
 | `--pd` | `-P` | ✅ | — | PD部署模式: `agg`(非PD分离) 或 `disagg`(PD分离) |
@@ -285,7 +285,7 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 | `--served-model-name` | `-n` | ✅ | — | 服务模型名 |
 | `--prefix-lens` | `-p` | | `8192,32768,65536` | 前缀长度列表 |
 | `--output-lens` | `-o` | | `512` | 输出长度列表 |
-| `--concurrency` | `-c` | | `1,4,8,16,32,64,128` | 并发数列表（num_prompts = 10×并发） |
+| `--concurrency` | `-c` | | `1,4,8,16,32,64,128` | 并发数列表（num_prompts = 10×并发数） |
 | `--chip-type` | `-t` | ✅ | — | 芯片类型（CSV 列名后缀） |
 | `--tester` | `-T` | ✅ | — | 测试人员（用于报告目录层级和报告命名） |
 | `--pd` | `-P` | ✅ | — | PD部署模式: `agg`(非PD分离) 或 `disagg`(PD分离) |
@@ -382,7 +382,7 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 | `--tester` | `-T` | ✅ | — | 测试人员（用于报告目录层级和报告命名） |
 | `--pd` | `-P` | ✅ | — | PD部署模式: `agg`(非PD分离) 或 `disagg`(PD分离) |
 | `--report-dir` | `-r` | | `./{framework}_cache_reports` | 报告输出目录 |
-| `--concurrency` | `-c` | | `1,4,8,16,32,64,128` | 并发数列表 |
+| `--concurrency` | `-c` | | `1,4,8,16,32,64,128` | 并发数列表（测试请求数 N_total = 5×并发数；另有预热 1 请求，不计量） |
 | `--cache-hit-rate` | `-R` | | `90` | 缓存命中率百分比（1~99），前缀级命中 |
 | `--sleep` | `-s` | | `60` | 每组测试间隔（秒） |
 | `--describe` | `-d` | | — | 模型描述信息（可选，填入报告末尾单独章节） |
@@ -484,7 +484,7 @@ python3 _scripts/csv_to_md.py \
 | **output_len** | 512 | 1（固定） | 512 | 512 |
 | **前缀缓存** | **关** | **关** | **开** | **开** |
 | **数据集** | `random-ids`/`random`（随机，无共享前缀） | `random-ids`/`random`（随机，无共享前缀） | `generated-shared-prefix`/`prefix_repetition`（共享前缀） | `generated-shared-prefix`/`prefix_repetition`（共享前缀） |
-| **num_prompts** | = 并发数 | = 5×并发数 | = 10×并发数 | N_total = 5×并发数 |
+| **num_prompts** | = 并发数 | = 5×并发数 | = 10×并发数 | N_total = 5×并发数（另预热 1 请求，不计量） |
 | **核心指标** | 输入/输出/总吞吐量、TTFT、TPOT | prefill 吞吐量、TTFT | decode 吞吐量、TPOT | 输入/输出/总吞吐量、TTFT、TPOT |
 | **命中率列** | 实测（关缓存时应为 0%） | 实测（关缓存时应为 ≈0%，无数据记 N/A） | 实测（缓存命中应为 ≈100%，无数据记 N/A） | 实测（SGLang `/metrics` 三层 L1/L2/L3 / vLLM `/metrics` 两层 L1/L3），vLLM L1 无数据回退 `-R`，SGLang 各层无数据显示 N/A |
 | **超时保护** | `--timeout`（默认 3600s） | 同左 | 同左 | 同左 |

@@ -1457,7 +1457,7 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 | `--served-model-name` | `-n` | ✅ | — | 服务模型名 |
 | `--prefix-lens` | `-p` | | `8192,32768,65536` | 前缀长度列表 |
 | `--output-lens` | `-o` | | `512` | 输出长度列表 |
-| `--concurrency` | `-c` | | `1,4,8,16,32,64,128` | 并发数列表（num_prompts = 10×并发） |
+| `--concurrency` | `-c` | | `1,4,8,16,32,64,128` | 并发数列表（num_prompts = 10×并发数） |
 | `--chip-type` | `-t` | ✅ | — | 芯片类型（CSV 列名后缀） |
 | `--tester` | `-T` | ✅ | — | 测试人员（用于报告目录层级和报告命名） |
 | `--pd` | `-P` | ✅ | — | PD部署模式: `agg`(非PD分离) 或 `disagg`(PD分离) |
@@ -1744,6 +1744,7 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 | **共享前缀长度** | `输入长度 × 命中率/100` | 90% → 58982, 95% → 62259 |
 | **唯一后缀长度** | `输入长度 - 共享前缀长度` | 90% → 6554, 95% → 3277 |
 | **N_total** | `5 × concurrency` | 测试阶段总请求数（5倍并发） |
+| **预热请求数** | `1` | 阶段 1 预热：1 个请求填入共享前缀（不计量，结果表自动跳过预热日志） |
 | **并发数** | `1, 4, 8, 16, 32, 64, 128` | max-concurrency（仅阶段 2） |
 | **Seed** | `123` | 可复现（预热和测试必须相同） |
 
@@ -1908,7 +1909,7 @@ general-benchmark-test/
 |---|---|---|
 | `bench.sh` | `sglang` (benchmark.serving) / `vllm` (bench serve) | 统一脚本，`-F` 指定框架 |
 | `prefill_bench.sh` | `sglang` / `vllm` | output_len=1 变体，`-F` 指定框架 |
-| `decode_bench.sh` | `sglang` / `vllm` | SGLang 用 GSP / vLLM 用 prefix_repetition，`num_prompts = 10×并发` 增加样本量 |
+| `decode_bench.sh` | `sglang` / `vllm` | SGLang 用 GSP / vLLM 用 prefix_repetition，`num_prompts = 10×并发数` 增加样本量 |
 | `cache_bench.sh` | `sglang` / `vllm` | 前缀级命中：共享前缀(命中)+唯一后缀(未命中)，两阶段预热+测试，`-R` 指定命中率（默认 90%） |
 | `decode_http_sweep.py` | **仅 Python 标准库** | 零第三方依赖，跨框架/跨厂商可用【仅供参考，实际测试不使用】 |
 | `collect_results.py` | **仅 Python 标准库** | 扫描日志提取指标生成 CSV，所有脚本结束后自动调用 |
@@ -1923,7 +1924,7 @@ general-benchmark-test/
 | **第1章 Benchmark** | `--disable-radix-cache` | `--no-enable-prefix-caching` | **关** | `random-ids` / `random` | = 并发数 |
 | **第2章 纯 Prefill** | `--disable-radix-cache` | `--no-enable-prefix-caching` | **关** | `random-ids` / `random` | = 5×并发数 |
 | **第2章 纯 Decode** | 默认（不加 `--disable-radix-cache`） | 默认（不加 `--no-enable-prefix-caching`） | **开** | `generated-shared-prefix` / `prefix_repetition` | = 10×并发数 |
-| **第3章 缓存命中率** | 默认（不加 `--disable-radix-cache`） | 默认（不加 `--no-enable-prefix-caching`） | **开** | `generated-shared-prefix` / `prefix_repetition` | N_total = 5×并发数 |
+| **第3章 缓存命中率** | 默认（不加 `--disable-radix-cache`） | 默认（不加 `--no-enable-prefix-caching`） | **开** | `generated-shared-prefix` / `prefix_repetition` | N_total = 5×并发数（另预热 1 请求，不计量） |
 
 ### 快速参考：容错与超时
 
