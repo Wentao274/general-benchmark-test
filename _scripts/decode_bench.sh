@@ -565,7 +565,7 @@ if [[ "$FRAMEWORK" == "sglang" ]]; then
 for PREFIX_LEN in ${PREFIX_LIST}; do
   for OUTPUT_LEN in ${OUTPUT_LIST}; do
     for CONCURRENCY in ${CONC_LIST}; do
-      NUM_PROMPTS=\$((CONCURRENCY * 2))
+      NUM_PROMPTS=\$((CONCURRENCY * 10))
       $PYTHON_CMD -m sglang.benchmark.serving \\
         --backend sglang-oai-chat \\
         --base-url \"\$BASE_URL\" \\
@@ -590,7 +590,7 @@ elif [[ "$FRAMEWORK" == "vllm" ]]; then
 for PREFIX_LEN in ${PREFIX_LIST}; do
   for OUTPUT_LEN in ${OUTPUT_LIST}; do
     for CONCURRENCY in ${CONC_LIST}; do
-      NUM_PROMPTS=\$((CONCURRENCY * 2))
+      NUM_PROMPTS=\$((CONCURRENCY * 10))
       vllm bench serve \\
         --backend openai-chat \\
         --endpoint /v1/chat/completions \\

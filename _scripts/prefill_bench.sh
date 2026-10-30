@@ -531,7 +531,7 @@ if [[ "$FRAMEWORK" == "sglang" ]]; then
   BENCH_COMMANDS="# 并发数列表: ${CONCURRENCY_STR}
 # IO 组合: ${IO_STR}
 for CONCURRENCY in ${CONC_LIST}; do
-  NUM_PROMPTS=\$CONCURRENCY
+  NUM_PROMPTS=\$((CONCURRENCY * 5))
   for IO in ${IO_QUOTED}; do
     INPUT_LEN=\$(echo \"\$IO\" | awk '{print \$1}')
     OUTPUT_LEN=\$(echo \"\$IO\" | awk '{print \$2}')
@@ -553,7 +553,7 @@ elif [[ "$FRAMEWORK" == "vllm" ]]; then
   BENCH_COMMANDS="# 并发数列表: ${CONCURRENCY_STR}
 # IO 组合: ${IO_STR}
 for CONCURRENCY in ${CONC_LIST}; do
-  NUM_PROMPTS=\$CONCURRENCY
+  NUM_PROMPTS=\$((CONCURRENCY * 5))
   for IO in ${IO_QUOTED}; do
     INPUT_LEN=\$(echo \"\$IO\" | awk '{print \$1}')
     OUTPUT_LEN=\$(echo \"\$IO\" | awk '{print \$2}')

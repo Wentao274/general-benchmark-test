@@ -103,6 +103,8 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
   -r /mnt/results/vllm_bench -s 30 -T zhangsan -P agg
 ```
 
+> **测试数据集**：SGLang `random-ids` / vLLM `random`——bench 工具按 IO 组合动态生成的随机 token 序列（无真实语义，固定 seed 可复现），请求间无共享前缀（`random-prefix-len 0`），配合服务端关闭前缀缓存，结果不受缓存命中影响。
+
 ### 参数说明
 
 | 参数 | 短写 | 必选 | 默认值 | 说明 |
@@ -179,6 +181,8 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
   -c 1,8,64 -i "32768 1,65536 1" \
   -T zhangsan -P agg
 ```
+
+> **测试数据集**：与基础 Benchmark 相同——SGLang `random-ids` / vLLM `random`（随机 token，动态生成，固定 seed 可复现），`random-prefix-len 0` 无共享前缀。
 
 ### 参数说明
 
@@ -268,6 +272,8 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
   -p 8192,65536 -o 512 -c 1,16,128 \
   -T zhangsan -P agg
 ```
+
+> **测试数据集**：SGLang `generated-shared-prefix`（GSP）/ vLLM `prefix_repetition`——合成共享前缀数据集：同组所有请求共享完全相同的前缀（长度 = `--prefix-lens`），前缀之外每请求仅 1 个新 token；首个请求填充前缀缓存后，其余请求 prefill≈0。
 
 ### 参数说明
 
@@ -361,6 +367,8 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
   -n glm-5.2-fp8 -t H100 -T zhangsan -P disagg \
   -R 95
 ```
+
+> **测试数据集**：与纯 Decode 同族——SGLang `generated-shared-prefix`（GSP）/ vLLM `prefix_repetition`：共享前缀长度 = 输入长度 × 命中率（`-R`），每请求唯一后缀 = 输入长度 − 前缀（随机生成、各不相同，为未命中部分）。
 
 ### 参数说明
 
@@ -475,7 +483,7 @@ python3 _scripts/csv_to_md.py \
 | **测试目标** | 端到端性能 | prefill 前向算力 | decode 迭代性能 | 指定前缀命中率下推理性能 |
 | **output_len** | 512 | 1（固定） | 512 | 512 |
 | **前缀缓存** | **关** | **关** | **开** | **开** |
-| **数据集** | `random-ids`/`random` | 同左 | `generated-shared-prefix`/`prefix_repetition` | 同左 |
+| **数据集** | `random-ids`/`random`（随机，无共享前缀） | `random-ids`/`random`（随机，无共享前缀） | `generated-shared-prefix`/`prefix_repetition`（共享前缀） | `generated-shared-prefix`/`prefix_repetition`（共享前缀） |
 | **num_prompts** | = 并发数 | = 5×并发数 | = 10×并发数 | N_total = 5×并发数 |
 | **核心指标** | 输入/输出/总吞吐量、TTFT、TPOT | prefill 吞吐量、TTFT | decode 吞吐量、TPOT | 输入/输出/总吞吐量、TTFT、TPOT |
 | **命中率列** | 实测（关缓存时应为 0%） | 实测（关缓存时应为 ≈0%，无数据记 N/A） | 实测（缓存命中应为 ≈100%，无数据记 N/A） | 实测（SGLang `/metrics` 三层 L1/L2/L3 / vLLM `/metrics` 两层 L1/L3），vLLM L1 无数据回退 `-R`，SGLang 各层无数据显示 N/A |

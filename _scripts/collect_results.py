@@ -22,6 +22,13 @@ CSV 列根据框架条件化生成：
   SGLang: L1命中率 / L2命中率 / L3命中率（HiCache 分层，L1=device/GPU, L2=host/CPU, L3=storage/DFKV）
   vLLM:   L1命中率 / L3命中率（L1-GPU prefix cache, L3-external/LM Cache；无 L2）
 
+前缀长度列（所有测试类型统一包含）：
+  decode: 文件名 prefix-{PL}（共享前缀，每请求另有 1 个新 token）
+  cache:  输入长度 × 命中率 / 100（与 cache_bench.sh 公式一致）
+  benchmark/prefill: 无共享前缀概念，显示 "—"
+  decode 的输入长度列 = 前缀 + 1（每请求实际输入 token 数）。
+  行按 输入长度 → 输出长度 → 并发数 数值升序排列。
+
   用法:
   python3 collect_results.py --report-dir ./sglang_reports/model_name/YYYYMMDD_HHMMSS \
       --model-name glm-5.2-fp8 --framework sglang --chip-type H100 \
@@ -49,6 +56,7 @@ def csv_columns(chip_type, framework=""):
         "推理框架",
         "输入长度",
         "输出长度",
+        "前缀长度",
         "并发数",
     ]
     if framework == "sglang":
@@ -77,32 +85,36 @@ def csv_columns(chip_type, framework=""):
 # ---------------------------------------------------------------- 文件名解析
 
 def parse_filename(fname):
-    """从日志文件名提取 (test_type, input_len, output_len, concurrency, cache_hit_rate_pct)。
+    """从日志文件名提取 (test_type, input_len, output_len, prefix_len, concurrency, cache_hit_rate_pct)。
 
     返回 None 表示无法识别的文件名。
+    prefix_len：decode 取文件名 prefix-{PL}；cache = 输入长度 × 命中率 / 100（与脚本公式一致）；
+    benchmark/prefill 无共享前缀概念，返回 None（表格中显示 "—"）。
+    decode 的输入长度 = 前缀 + 1（每请求 1 个新 token）。
     cache_hit_rate_pct 为 Prefix Cache 命中率百分比整数（0~100）；
     benchmark 类型返回 None，表示命中率从日志内容实测（见 parse_log_content）。
     """
     # benchmark: bench_bs-{N}_input_len-{IL}-output_len-{OL}.log
     m = re.match(r'bench_bs-(\d+)_input_len-(\d+)-output_len-(\d+)\.log$', fname)
     if m:
-        return "benchmark", int(m.group(2)), int(m.group(3)), int(m.group(1)), None
+        return "benchmark", int(m.group(2)), int(m.group(3)), None, int(m.group(1)), None
 
     # prefill: prefill_bs-{N}_input-{IL}.log
     m = re.match(r'prefill_bs-(\d+)_input-(\d+)\.log$', fname)
     if m:
-        return "prefill", int(m.group(2)), 1, int(m.group(1)), 0
+        return "prefill", int(m.group(2)), 1, None, int(m.group(1)), 0
 
-    # decode: decode_bs-{N}_prefix-{PL}-output-{OL}.log
+    # decode: decode_bs-{N}_prefix-{PL}-output-{OL}.log（输入 = 共享前缀 + 1 个新 token）
     m = re.match(r'decode_bs-(\d+)_prefix-(\d+)-output-(\d+)\.log$', fname)
     if m:
-        return "decode", 1, int(m.group(3)), int(m.group(1)), 100
+        prefix_len = int(m.group(2))
+        return "decode", prefix_len + 1, int(m.group(3)), prefix_len, int(m.group(1)), 100
 
-    # cache: cache_bs-{N}_hit-{HR}_input-{IL}-output-{OL}.log
+    # cache: cache_bs-{N}_hit-{HR}_input-{IL}-output-{OL}.log（前缀 = IL × HR / 100）
     m = re.match(r'cache_bs-(\d+)_hit-(\d+)_input-(\d+)-output-(\d+)\.log$', fname)
     if m:
-        # Prefix Cache命中率 = HR%（从文件名提取）
-        return "cache", int(m.group(3)), int(m.group(4)), int(m.group(1)), int(m.group(2))
+        input_len, hit_rate = int(m.group(3)), int(m.group(2))
+        return "cache", input_len, int(m.group(4)), input_len * hit_rate // 100, int(m.group(1)), hit_rate
 
     return None
 
@@ -259,7 +271,7 @@ def scan_dir(report_dir, model_name, framework):
                 # 跳过非测试日志（如 sglang_bench_时间戳.log）
                 skipped += 1
                 continue
-            test_type, input_len, output_len, concurrency, cache_hit_rate = parsed
+            test_type, input_len, output_len, prefix_len, concurrency, cache_hit_rate = parsed
             filepath = os.path.join(root, fname)
             metrics = parse_log_content(filepath)
             measured = metrics["cache_hit_rate"]
@@ -278,11 +290,14 @@ def scan_dir(report_dir, model_name, framework):
                 # 无数据时记 N/A——期望值 0%/100% 是待验证目标而非测量结果，
                 # 不作为回退值（避免伪造验证通过）
                 hit_rate = f"{measured:.1f}% (spec={cache_hit_rate}%)" if measured is not None else "N/A"
+            # 前缀长度：decode/cache 有效；benchmark/prefill 无共享前缀概念，显示 "—"
+            prefix_display = prefix_len if prefix_len is not None else "—"
             row = {
                 "模型名称": model_name,
                 "推理框架": framework,
                 "输入长度": input_len,
                 "输出长度": output_len,
+                "前缀长度": prefix_display,
                 "并发数": concurrency,
                 "输入token吞吐量": metrics["input_throughput"],
                 "输出token吞吐量": metrics["output_throughput"],
@@ -339,7 +354,7 @@ def main():
         print("[WARN] 未在 %s 中找到任何测试日志" % args.report_dir, file=sys.stderr)
         sys.exit(0)
 
-    # 排序：按输入长度 → 输出长度 → 并发数
+    # 排序：按输入长度 → 输出长度 → 并发数（数值升序；decode 按前缀递增分组）
     rows.sort(key=lambda r: (r["输入长度"], r["输出长度"], r["并发数"]))
 
     outdir = os.path.dirname(os.path.abspath(args.out))
@@ -360,6 +375,7 @@ def main():
                 r["推理框架"],
                 r["输入长度"],
                 r["输出长度"],
+                r["前缀长度"],
                 r["并发数"],
             ]
             for ck in cache_cols:
