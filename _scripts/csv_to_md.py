@@ -33,8 +33,10 @@ import sys
 def csv_to_markdown_table(csv_path: str) -> str:
     """读取 CSV 文件，转换为 Markdown 表格字符串。
 
-    对前 4 列（模型名称、推理框架、输入长度、输出长度）做留空合并：
-    当某列值与上一行相同时，该单元格留空，实现视觉合并效果。
+    前 4 列做留空合并（视觉合并效果）：
+      - 模型名称、推理框架：与上一行相同时留空；
+      - 输入长度、输出长度：成对合并——两列都与上一行相同时才留空，
+        任一变化则两列同时显示（保证输入长度有值时输出长度必有值，一一对应）。
     """
     with open(csv_path, encoding="utf-8-sig", newline="") as f:
         reader = csv.reader(f)
@@ -46,7 +48,6 @@ def csv_to_markdown_table(csv_path: str) -> str:
     header = rows[0]
     data_rows = rows[1:]
 
-    # 前 4 列做留空合并（模型名称、推理框架、输入长度、输出长度）
     MERGE_COLS = min(4, len(header))
     prev = [""] * MERGE_COLS
 
@@ -56,11 +57,20 @@ def csv_to_markdown_table(csv_path: str) -> str:
     for row in data_rows:
         padded = list(row) + [""] * (len(header) - len(row))
         display = list(padded)
-        for c in range(MERGE_COLS):
+        # 第 1、2 列（模型名称、推理框架）独立合并
+        for c in range(min(2, MERGE_COLS)):
             if padded[c] == prev[c]:
                 display[c] = ""
             else:
                 prev[c] = padded[c]
+        # 第 3、4 列（输入长度、输出长度）成对合并
+        if MERGE_COLS >= 4:
+            if padded[2] == prev[2] and padded[3] == prev[3]:
+                display[2] = ""
+                display[3] = ""
+            else:
+                prev[2] = padded[2]
+                prev[3] = padded[3]
         lines.append("| " + " | ".join(display) + " |")
 
     return "\n".join(lines)

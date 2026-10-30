@@ -29,6 +29,10 @@ CSV 列根据框架条件化生成：
   decode 的输入长度列 = 前缀 + 1（每请求实际输入 token 数）。
   行按 输入长度 → 输出长度 → 并发数 数值升序排列。
 
+请求数列（并发数之后）：
+  优先取日志实测的 "Successful requests"（真实完成请求数，含失败重跑外的成功数）；
+  旧日志无该行时按类型公式回退：benchmark=并发数、prefill=5×并发、decode=10×并发、cache=5×并发。
+
   用法:
   python3 collect_results.py --report-dir ./sglang_reports/model_name/YYYYMMDD_HHMMSS \
       --model-name glm-5.2-fp8 --framework sglang --chip-type H100 \
@@ -58,6 +62,7 @@ def csv_columns(chip_type, framework=""):
         "输出长度",
         "前缀长度",
         "并发数",
+        "请求数",
     ]
     if framework == "sglang":
         cache_cols = ["L1命中率", "L2命中率", "L3命中率"]
@@ -175,6 +180,9 @@ PATTERNS = {
     "benchmark_duration": re.compile(
         r'(?:Benchmark duration|测试持续时间)\s*[\（(]s[\）)]\s*:\s*([\d.]+)',
         re.IGNORECASE),
+    # 请求数：日志实测的成功请求数（真实值，优先于公式回退）
+    "successful_requests": re.compile(
+        r'Successful\s+requests?\s*[^0-9\n]*?(\d+)'),
     # 前缀缓存命中率实测值（取最后一个匹配：/metrics 差值覆盖 --cache-report 的 L1 值）
     "cache_hit_rate": re.compile(
         r'Cache hit rate:\s*([\d.]+)\s*%',
@@ -200,6 +208,7 @@ def parse_log_content(filepath):
         "output_throughput": "",
         "total_throughput": "",
         "request_throughput": "",
+        "successful_requests": None,
         "mean_ttft": "",
         "median_ttft": "",
         "p90_ttft": "",
@@ -292,6 +301,17 @@ def scan_dir(report_dir, model_name, framework):
                 hit_rate = f"{measured:.1f}% (spec={cache_hit_rate}%)" if measured is not None else "N/A"
             # 前缀长度：decode/cache 有效；benchmark/prefill 无共享前缀概念，显示 "—"
             prefix_display = prefix_len if prefix_len is not None else "—"
+            # 请求数：优先取日志实测 Successful requests（真实值）；
+            # 旧日志无该行时按各测试类型公式回退（与当前脚本版本一致）
+            if metrics["successful_requests"] is not None:
+                request_count = int(metrics["successful_requests"])
+            else:
+                request_count = {
+                    "benchmark": concurrency,
+                    "prefill": concurrency * 5,
+                    "decode": concurrency * 10,
+                    "cache": concurrency * 5,
+                }.get(test_type, concurrency)
             row = {
                 "模型名称": model_name,
                 "推理框架": framework,
@@ -299,6 +319,7 @@ def scan_dir(report_dir, model_name, framework):
                 "输出长度": output_len,
                 "前缀长度": prefix_display,
                 "并发数": concurrency,
+                "请求数": request_count,
                 "输入token吞吐量": metrics["input_throughput"],
                 "输出token吞吐量": metrics["output_throughput"],
                 "总token吞吐量": metrics["total_throughput"],
@@ -377,6 +398,7 @@ def main():
                 r["输出长度"],
                 r["前缀长度"],
                 r["并发数"],
+                r["请求数"],
             ]
             for ck in cache_cols:
                 row_vals.append(r.get(ck, ""))
