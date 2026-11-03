@@ -42,11 +42,11 @@ BACKGROUND=true
 TIMEOUT=3600
 
 # 前缀长度列表（模拟 KV cache 已就位的上下文长度）
-DEFAULT_PREFIX_LENS="8192,32768,65536"
-# decode 输出长度列表
-DEFAULT_OUTPUT_LENS="512"
+DEFAULT_PREFIX_LENS="8192,32768,65536,131072,262144"
+# decode 输出长度：未指定 -o 时按前缀组配对（≤64K → 512，128K~256K → 1024）
+DEFAULT_OUTPUT_LENS=""
 # 并发数列表
-DEFAULT_CONCURRENCY="1,4,8,16,32,64,128"
+DEFAULT_CONCURRENCY="1,8,32,64,128"
 
 # --- 参数解析 ---
 usage() {
@@ -70,7 +70,7 @@ Usage: $0 -F <sglang|vllm> [OPTIONS]
 可选参数:
   -r, --report-dir DIR          报告输出目录        (default: ./{framework}_decode_reports)
   -p, --prefix-lens LIST        前缀长度列表(逗号分隔) (default: $DEFAULT_PREFIX_LENS)
-  -o, --output-lens LIST        输出长度列表(逗号分隔) (default: $DEFAULT_OUTPUT_LENS)
+  -o, --output-lens LIST        输出长度列表(逗号分隔;缺省按前缀组配对: <=64K->512, 128K~256K->1024)
   -c, --concurrency LIST        并发数列表(逗号分隔) (default: $DEFAULT_CONCURRENCY)
   -s, --sleep SECONDS           每次测试间隔秒数    (default: $SLEEP_TIME)
   -d, --describe TEXT           模型描述信息(可选,填入报告末尾)
@@ -238,7 +238,11 @@ echo "=== Model Path:   $MODEL_PATH"
 echo "=== Served Name:  $SERVED_MODEL_NAME"
 echo "=== Report Dir:   $RUN_DIR"
 echo "=== Prefix Lens:  ${prefix_lens[*]}"
-echo "=== Output Lens:   ${output_lens[*]}"
+if [[ -n "$OUTPUT_LENS_ARG" ]]; then
+  echo "=== Output Lens:   ${output_lens[*]}"
+else
+  echo "=== Output Lens:   512 (prefix<=64K) / 1024 (prefix>64K) [paired per prefix]"
+fi
 echo "=== Concurrency:  ${concurrency_list[*]}"
 if [[ "$FRAMEWORK" == "sglang" ]]; then
   echo "=== Dataset:      generated-shared-prefix (GSP)"
@@ -456,7 +460,18 @@ append_sglang_cache_report() {
 }
 
 for prefix_len in "${prefix_lens[@]}"; do
-  for output_len in "${output_lens[@]}"; do
+  if [[ -n "$OUTPUT_LENS_ARG" ]]; then
+    # 用户显式指定 -o：前缀 × 输出全交叉
+    eff_output_lens=("${output_lens[@]}")
+  else
+    # 缺省：输出长度按前缀组配对（≤64K → 512，128K~256K → 1024）
+    if [[ "$prefix_len" -le 65536 ]]; then
+      eff_output_lens=(512)
+    else
+      eff_output_lens=(1024)
+    fi
+  fi
+  for output_len in "${eff_output_lens[@]}"; do
     for concurrency in "${concurrency_list[@]}"; do
       # num_prompts = 10 × 并发数，增加统计样本数，提高测量稳定性
       num_prompts=$((concurrency * 10))
@@ -557,13 +572,23 @@ fi
 PREFIX_LIST="${prefix_lens[*]}"
 OUTPUT_LIST="${output_lens[*]}"
 CONC_LIST="${concurrency_list[*]}"
+if [[ -n "$OUTPUT_LENS_ARG" ]]; then
+  OUT_HDR="# 输出长度列表: ${OUTPUT_LENS_STR}"
+  OUT_OPEN="  for OUTPUT_LEN in ${OUTPUT_LIST}; do"
+  OUT_CLOSE="  done"
+else
+  OUT_HDR="# 输出长度: 512（≤64K 前缀组）/ 1024（128K~256K 前缀组），按前缀组配对"
+  OUT_OPEN="  # 输出长度按前缀组配对：≤64K → 512，128K~256K → 1024
+  if [[ \"\$PREFIX_LEN\" -le 65536 ]]; then OUTPUT_LEN=512; else OUTPUT_LEN=1024; fi"
+  OUT_CLOSE=""
+fi
 
 if [[ "$FRAMEWORK" == "sglang" ]]; then
   BENCH_COMMANDS="# 前缀长度列表: ${PREFIX_LENS_STR}
-# 输出长度列表: ${OUTPUT_LENS_STR}
+${OUT_HDR}
 # 并发数列表: ${CONCURRENCY_STR}
 for PREFIX_LEN in ${PREFIX_LIST}; do
-  for OUTPUT_LEN in ${OUTPUT_LIST}; do
+${OUT_OPEN}
     for CONCURRENCY in ${CONC_LIST}; do
       NUM_PROMPTS=\$((CONCURRENCY * 10))
       $PYTHON_CMD -m sglang.benchmark.serving \\
@@ -581,14 +606,14 @@ for PREFIX_LEN in ${PREFIX_LIST}; do
         --max-concurrency \$CONCURRENCY \\
         --seed ${SEED}
     done
-  done
+${OUT_CLOSE}
 done"
 elif [[ "$FRAMEWORK" == "vllm" ]]; then
   BENCH_COMMANDS="# 前缀长度列表: ${PREFIX_LENS_STR}
-# 输出长度列表: ${OUTPUT_LENS_STR}
+${OUT_HDR}
 # 并发数列表: ${CONCURRENCY_STR}
 for PREFIX_LEN in ${PREFIX_LIST}; do
-  for OUTPUT_LEN in ${OUTPUT_LIST}; do
+${OUT_OPEN}
     for CONCURRENCY in ${CONC_LIST}; do
       NUM_PROMPTS=\$((CONCURRENCY * 10))
       vllm bench serve \\
@@ -610,7 +635,7 @@ for PREFIX_LEN in ${PREFIX_LIST}; do
         --metric_percentiles 90,95,99 \\
         --ready-check-timeout-sec 30
     done
-  done
+${OUT_CLOSE}
 done"
 fi
 

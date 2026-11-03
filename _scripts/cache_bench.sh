@@ -55,11 +55,10 @@ TIMEOUT=3600
 
 # 缓存命中率（百分比），默认 90
 DEFAULT_CACHE_HIT_RATE=90
-# 固定输入输出组合：64K 输入，512 输出
-INPUT_LEN=65536
-OUTPUT_LEN=512
+# IO 组合列表（每组 "输入 输出"）
+DEFAULT_IO="65536 512,131072 1024,262144 1024"
 # 并发数列表
-DEFAULT_CONCURRENCY="1,4,8,16,32,64,128"
+DEFAULT_CONCURRENCY="1,8,32,64,128"
 
 # --- 参数解析 ---
 usage() {
@@ -83,6 +82,7 @@ Usage: $0 -F <sglang|vllm> [OPTIONS]
 可选参数:
   -r, --report-dir DIR          报告输出目录        (default: ./{framework}_cache_reports)
   -c, --concurrency LIST        并发数列表(逗号分隔) (default: $DEFAULT_CONCURRENCY)
+  -i, --io-combinations LIST    IO组合(逗号分隔,每组"in out") (default: $DEFAULT_IO)
   -R, --cache-hit-rate PCT      缓存命中率百分比     (default: $DEFAULT_CACHE_HIT_RATE)
                                   如 90 表示每个请求 90% 前缀命中、10% 后缀未命中
                                   共享前缀长度 = 输入长度 × PCT/100
@@ -108,6 +108,7 @@ while [[ $# -gt 0 ]]; do
     -n|--served-model-name)   SERVED_MODEL_NAME="$2";    shift 2 ;;
     -r|--report-dir)          REPORT_DIR="$2";           shift 2 ;;
     -c|--concurrency)         CONCURRENCY_ARG="$2";      shift 2 ;;
+    -i|--io-combinations)     IO_ARG="$2";              shift 2 ;;
     -R|--cache-hit-rate)      CACHE_HIT_RATE="$2";       shift 2 ;;
     -s|--sleep)               SLEEP_TIME="$2";           shift 2 ;;
     -d|--describe)            DESCRIBE="$2";             shift 2 ;;
@@ -216,6 +217,7 @@ if [[ "$BACKGROUND" == "true" ]]; then
     --served-model-name "$SERVED_MODEL_NAME" \
     --report-dir "$REPORT_DIR" \
     --concurrency "${CONCURRENCY_ARG:-$DEFAULT_CONCURRENCY}" \
+    --io-combinations "${IO_ARG:-$DEFAULT_IO}" \
     --cache-hit-rate "$CACHE_HIT_RATE" \
     --sleep "$SLEEP_TIME" \
     --chip-type "$CHIP_TYPE" \
@@ -246,11 +248,9 @@ RUN_TS=$(date +%Y%m%d_%H%M%S)
 RUN_DIR="$REPORT_DIR/${TESTER}/${safe_model_name}/${RUN_TS}"
 mkdir -p "$RUN_DIR"
 
-# --- 计算前缀级缓存命中参数 ---
-# 共享前缀长度 = 输入长度 × 命中率 / 100（命中部分）
-# 唯一后缀长度 = 输入长度 - 共享前缀长度（未命中部分）
-prefix_len=$(( INPUT_LEN * CACHE_HIT_RATE / 100 ))
-suffix_len=$(( INPUT_LEN - prefix_len ))
+# --- 构建 IO 组合列表（每组 "输入 输出"） ---
+IO_STR="${IO_ARG:-$DEFAULT_IO}"
+IFS=',' read -ra io_combinations <<< "$IO_STR"
 
 echo "=========================================="
 echo "=== Starting ${BENCH_LABEL} Cache Hit Rate Benchmark ==="
@@ -260,11 +260,8 @@ echo "=== Model Path:     $MODEL_PATH"
 echo "=== Served Name:    $SERVED_MODEL_NAME"
 echo "=== Report Dir:     $RUN_DIR"
 echo "=== Concurrency:    ${concurrency_list[*]}"
-echo "=== Input Length:   ${INPUT_LEN}"
-echo "=== Output Length:  ${OUTPUT_LEN}"
+echo "=== IO Combinations: ${IO_STR}"
 echo "=== Cache Hit Rate: ${CACHE_HIT_RATE}% (prefix-level)"
-echo "=== Shared Prefix:  ${prefix_len} tokens (hit)"
-echo "=== Unique Suffix:  ${suffix_len} tokens (miss)"
 echo "=== Chip Type:      ${CHIP_TYPE:-(未指定)}"
 echo "=== Tester:         $TESTER"
 echo "=== PD Mode:        $PD"
@@ -496,176 +493,184 @@ for concurrency in "${concurrency_list[@]}"; do
   # N_total = 测试阶段总请求数 = 5 × 并发数（增加统计样本，提高测量稳定性）
   N_total=$(( concurrency * 5 ))
 
-  echo ""
-  echo "--- Configuration: Concurrency=$concurrency, N_total=$N_total ---"
+  for combo in "${io_combinations[@]}"; do
+    input_len=$(echo "$combo" | awk '{print $1}')
+    output_len=$(echo "$combo" | awk '{print $2}')
+    # 前缀级命中参数（按该组合输入长度计算）
+    prefix_len=$(( input_len * CACHE_HIT_RATE / 100 ))
+    suffix_len=$(( input_len - prefix_len ))
 
-  # 构建日志文件路径
-  log_file="${RUN_DIR}/cache_bs-${concurrency}_hit-${CACHE_HIT_RATE}_input-${INPUT_LEN}-output-${OUTPUT_LEN}.log"
-  warmup_log="${RUN_DIR}/cache_bs-${concurrency}_hit-${CACHE_HIT_RATE}_warmup.log"
-  jsonl_file="${RUN_DIR}/cache_bs-${concurrency}_hit-${CACHE_HIT_RATE}_input-${INPUT_LEN}-output-${OUTPUT_LEN}.jsonl"
-  warmup_jsonl="${RUN_DIR}/cache_bs-${concurrency}_hit-${CACHE_HIT_RATE}_warmup.jsonl"
+    echo ""
+    echo "--- Configuration: Concurrency=$concurrency, Input=${input_len}, Output=${output_len}, N_total=$N_total ---"
 
-  # ============================================================
-  # 阶段 1：预热（不计量）
-  # 用 concurrency=1 发送 1 个请求，将共享前缀填入缓存
-  # 使用与阶段 2 相同的 seed 和 gsp-num-groups=1，确保前缀相同
-  # ============================================================
-  echo ""
-  echo ">>> [Phase 1] Pre-warming: sending 1 request at concurrency=1 (fills shared prefix into cache)..."
-  echo ">>> Warmup log: $warmup_log"
+    # 构建日志文件路径
+    log_file="${RUN_DIR}/cache_bs-${concurrency}_hit-${CACHE_HIT_RATE}_input-${input_len}-output-${output_len}.log"
+    warmup_log="${RUN_DIR}/cache_bs-${concurrency}_hit-${CACHE_HIT_RATE}_input-${input_len}_warmup.log"
+    jsonl_file="${RUN_DIR}/cache_bs-${concurrency}_hit-${CACHE_HIT_RATE}_input-${input_len}-output-${output_len}.jsonl"
+    warmup_jsonl="${RUN_DIR}/cache_bs-${concurrency}_hit-${CACHE_HIT_RATE}_input-${input_len}_warmup.jsonl"
 
-  if [[ "$FRAMEWORK" == "sglang" ]]; then
-    set +e
-    timeout "$TIMEOUT" "$PYTHON_CMD" -m sglang.benchmark.serving \
-      --backend sglang-oai-chat \
-      --base-url "$BASE_URL" \
-      --model "$MODEL_PATH" \
-      --served-model-name "$SERVED_MODEL_NAME" \
-      --dataset-name generated-shared-prefix \
-      --gsp-num-groups 1 \
-      --gsp-prompts-per-group 1 \
-      --gsp-system-prompt-len "$prefix_len" \
-      --gsp-question-len "$suffix_len" \
-      --gsp-output-len 1 \
-      --num-prompts 1 \
-      --max-concurrency 1 \
-      --seed "$SEED" \
-      --output-file "$warmup_jsonl" \
-      > "$warmup_log" 2>&1
-    warmup_status=$?
-    set -e
-  elif [[ "$FRAMEWORK" == "vllm" ]]; then
-    set +e
-    timeout "$TIMEOUT" vllm bench serve \
-      --backend openai-chat \
-      --endpoint /v1/chat/completions \
-      --base-url "$BASE_URL" \
-      --model "$MODEL_PATH" \
-      --served-model-name "$SERVED_MODEL_NAME" \
-      --dataset-name prefix_repetition \
-      --prefix-repetition-prefix-len "$prefix_len" \
-      --prefix-repetition-suffix-len "$suffix_len" \
-      --prefix-repetition-num-prefixes 1 \
-      --prefix-repetition-output-len 1 \
-      --num-prompts 1 \
-      --max-concurrency 1 \
-      --trust-remote-code \
-      --temperature 0.7 \
-      --seed "$SEED" \
-      --metric_percentiles 90,95,99 \
-      --ready-check-timeout-sec 30 \
-      > "$warmup_log" 2>&1
-    warmup_status=$?
-    set -e
-  fi
+    # ============================================================
+    # 阶段 1：预热（不计量）
+    # 用 concurrency=1 发送 1 个请求，将共享前缀填入缓存
+    # 使用与阶段 2 相同的 seed 和 gsp-num-groups=1，确保前缀相同
+    # ============================================================
+    echo ""
+    echo ">>> [Phase 1] Pre-warming: sending 1 request at concurrency=1 (fills shared prefix into cache)..."
+    echo ">>> Warmup log: $warmup_log"
 
-  if [[ $warmup_status -eq 124 ]]; then
-    echo "!!! [Phase 1] Warmup TIMEOUT after ${TIMEOUT}s. Check log: $warmup_log"
-    echo "!!! Skipping this concurrency level."
-    FAIL_COUNT=$((FAIL_COUNT + 1))
-    sleep "$SLEEP_TIME"
-    continue
-  elif [[ $warmup_status -ne 0 ]]; then
-    echo "!!! [Phase 1] Warmup failed (exit code: $warmup_status). Check log: $warmup_log"
-    echo "!!! Skipping this concurrency level."
-    FAIL_COUNT=$((FAIL_COUNT + 1))
-    sleep "$SLEEP_TIME"
-    continue
-  fi
-  echo ">>> [Phase 1] Warmup done. Shared prefix (${prefix_len} tokens) cached."
+    if [[ "$FRAMEWORK" == "sglang" ]]; then
+      set +e
+      timeout "$TIMEOUT" "$PYTHON_CMD" -m sglang.benchmark.serving \
+        --backend sglang-oai-chat \
+        --base-url "$BASE_URL" \
+        --model "$MODEL_PATH" \
+        --served-model-name "$SERVED_MODEL_NAME" \
+        --dataset-name generated-shared-prefix \
+        --gsp-num-groups 1 \
+        --gsp-prompts-per-group 1 \
+        --gsp-system-prompt-len "$prefix_len" \
+        --gsp-question-len "$suffix_len" \
+        --gsp-output-len 1 \
+        --num-prompts 1 \
+        --max-concurrency 1 \
+        --seed "$SEED" \
+        --output-file "$warmup_jsonl" \
+        > "$warmup_log" 2>&1
+      warmup_status=$?
+      set -e
+    elif [[ "$FRAMEWORK" == "vllm" ]]; then
+      set +e
+      timeout "$TIMEOUT" vllm bench serve \
+        --backend openai-chat \
+        --endpoint /v1/chat/completions \
+        --base-url "$BASE_URL" \
+        --model "$MODEL_PATH" \
+        --served-model-name "$SERVED_MODEL_NAME" \
+        --dataset-name prefix_repetition \
+        --prefix-repetition-prefix-len "$prefix_len" \
+        --prefix-repetition-suffix-len "$suffix_len" \
+        --prefix-repetition-num-prefixes 1 \
+        --prefix-repetition-output-len 1 \
+        --num-prompts 1 \
+        --max-concurrency 1 \
+        --trust-remote-code \
+        --temperature 0.7 \
+        --seed "$SEED" \
+        --metric_percentiles 90,95,99 \
+        --ready-check-timeout-sec 30 \
+        > "$warmup_log" 2>&1
+      warmup_status=$?
+      set -e
+    fi
 
-  # --- 测试前抓取服务端前缀缓存计数器（与测试后差值计算真实命中率） ---
-  if [[ "$FRAMEWORK" == "vllm" ]]; then
-    cache_pc_before="$(wait_vllm_prefix_cache_counters)"
-  elif [[ "$FRAMEWORK" == "sglang" ]]; then
-    cache_pc_before="$(wait_sglang_cache_counters)"
-  fi
+    if [[ $warmup_status -eq 124 ]]; then
+      echo "!!! [Phase 1] Warmup TIMEOUT after ${TIMEOUT}s. Check log: $warmup_log"
+      echo "!!! Skipping this concurrency level."
+      FAIL_COUNT=$((FAIL_COUNT + 1))
+      sleep "$SLEEP_TIME"
+      continue
+    elif [[ $warmup_status -ne 0 ]]; then
+      echo "!!! [Phase 1] Warmup failed (exit code: $warmup_status). Check log: $warmup_log"
+      echo "!!! Skipping this concurrency level."
+      FAIL_COUNT=$((FAIL_COUNT + 1))
+      sleep "$SLEEP_TIME"
+      continue
+    fi
+    echo ">>> [Phase 1] Warmup done. Shared prefix (${prefix_len} tokens) cached."
 
-  # ============================================================
-  # 阶段 2：测试（计量）
-  # 用目标并发发送 N_total 个请求
-  # 所有请求共享同一前缀（命中 ${CACHE_HIT_RATE}%），各有不同后缀（未命中 ${suffix_len} tokens）
-  # 每个请求需 prefill ${suffix_len} tokens（唯一后缀）
-  # ============================================================
-  echo ""
-  echo ">>> [Phase 2] Testing: sending $N_total requests at concurrency=$concurrency..."
-  echo ">>> Each request: ${prefix_len} tokens hit + ${suffix_len} tokens miss = ${CACHE_HIT_RATE}% prefix hit rate"
-  echo ">>> Test log: $log_file"
+    # --- 测试前抓取服务端前缀缓存计数器（与测试后差值计算真实命中率） ---
+    if [[ "$FRAMEWORK" == "vllm" ]]; then
+      cache_pc_before="$(wait_vllm_prefix_cache_counters)"
+    elif [[ "$FRAMEWORK" == "sglang" ]]; then
+      cache_pc_before="$(wait_sglang_cache_counters)"
+    fi
 
-  if [[ "$FRAMEWORK" == "sglang" ]]; then
-    set +e
-    timeout "$TIMEOUT" "$PYTHON_CMD" -m sglang.benchmark.serving \
-      --backend sglang-oai-chat \
-      --base-url "$BASE_URL" \
-      --model "$MODEL_PATH" \
-      --served-model-name "$SERVED_MODEL_NAME" \
-      --dataset-name generated-shared-prefix \
-      --gsp-num-groups 1 \
-      --gsp-prompts-per-group "$N_total" \
-      --gsp-system-prompt-len "$prefix_len" \
-      --gsp-question-len "$suffix_len" \
-      --gsp-output-len "$OUTPUT_LEN" \
-      --num-prompts "$N_total" \
-      --max-concurrency "$concurrency" \
-      --seed "$SEED" \
-      --cache-report \
-      --output-file "$jsonl_file" \
-      > "$log_file" 2>&1
-    test_status=$?
-    set -e
-  elif [[ "$FRAMEWORK" == "vllm" ]]; then
-    set +e
-    timeout "$TIMEOUT" vllm bench serve \
-      --backend openai-chat \
-      --endpoint /v1/chat/completions \
-      --base-url "$BASE_URL" \
-      --model "$MODEL_PATH" \
-      --served-model-name "$SERVED_MODEL_NAME" \
-      --dataset-name prefix_repetition \
-      --prefix-repetition-prefix-len "$prefix_len" \
-      --prefix-repetition-suffix-len "$suffix_len" \
-      --prefix-repetition-num-prefixes 1 \
-      --prefix-repetition-output-len "$OUTPUT_LEN" \
-      --num-prompts "$N_total" \
-      --max-concurrency "$concurrency" \
-      --trust-remote-code \
-      --temperature 0.7 \
-      --seed "$SEED" \
-      --metric_percentiles 90,95,99 \
-      --ready-check-timeout-sec 30 \
-      > "$log_file" 2>&1
-    test_status=$?
-    set -e
-  fi
+    # ============================================================
+    # 阶段 2：测试（计量）
+    # 用目标并发发送 N_total 个请求
+    # 所有请求共享同一前缀（命中 ${CACHE_HIT_RATE}%），各有不同后缀（未命中 ${suffix_len} tokens）
+    # 每个请求需 prefill ${suffix_len} tokens（唯一后缀）
+    # ============================================================
+    echo ""
+    echo ">>> [Phase 2] Testing: sending $N_total requests at concurrency=$concurrency..."
+    echo ">>> Each request: ${prefix_len} tokens hit + ${suffix_len} tokens miss = ${CACHE_HIT_RATE}% prefix hit rate"
+    echo ">>> Test log: $log_file"
 
-  if [[ $test_status -eq 124 ]]; then
-    echo "!!! [Phase 2] Test TIMEOUT after ${TIMEOUT}s. Check log: $log_file"
-    FAIL_COUNT=$((FAIL_COUNT + 1))
-  elif [[ $test_status -ne 0 ]]; then
-    echo "!!! [Phase 2] Test failed (exit code: $test_status). Check log: $log_file"
-    FAIL_COUNT=$((FAIL_COUNT + 1))
-  else
-    error_pattern="$(check_log_errors "$log_file")" || true
-    if [[ -n "$error_pattern" ]]; then
-      echo "!!! [Phase 2] Log error detected: '$error_pattern'. Check log: $log_file"
+    if [[ "$FRAMEWORK" == "sglang" ]]; then
+      set +e
+      timeout "$TIMEOUT" "$PYTHON_CMD" -m sglang.benchmark.serving \
+        --backend sglang-oai-chat \
+        --base-url "$BASE_URL" \
+        --model "$MODEL_PATH" \
+        --served-model-name "$SERVED_MODEL_NAME" \
+        --dataset-name generated-shared-prefix \
+        --gsp-num-groups 1 \
+        --gsp-prompts-per-group "$N_total" \
+        --gsp-system-prompt-len "$prefix_len" \
+        --gsp-question-len "$suffix_len" \
+        --gsp-output-len "$output_len" \
+        --num-prompts "$N_total" \
+        --max-concurrency "$concurrency" \
+        --seed "$SEED" \
+        --cache-report \
+        --output-file "$jsonl_file" \
+        > "$log_file" 2>&1
+      test_status=$?
+      set -e
+    elif [[ "$FRAMEWORK" == "vllm" ]]; then
+      set +e
+      timeout "$TIMEOUT" vllm bench serve \
+        --backend openai-chat \
+        --endpoint /v1/chat/completions \
+        --base-url "$BASE_URL" \
+        --model "$MODEL_PATH" \
+        --served-model-name "$SERVED_MODEL_NAME" \
+        --dataset-name prefix_repetition \
+        --prefix-repetition-prefix-len "$prefix_len" \
+        --prefix-repetition-suffix-len "$suffix_len" \
+        --prefix-repetition-num-prefixes 1 \
+        --prefix-repetition-output-len "$output_len" \
+        --num-prompts "$N_total" \
+        --max-concurrency "$concurrency" \
+        --trust-remote-code \
+        --temperature 0.7 \
+        --seed "$SEED" \
+        --metric_percentiles 90,95,99 \
+        --ready-check-timeout-sec 30 \
+        > "$log_file" 2>&1
+      test_status=$?
+      set -e
+    fi
+
+    if [[ $test_status -eq 124 ]]; then
+      echo "!!! [Phase 2] Test TIMEOUT after ${TIMEOUT}s. Check log: $log_file"
+      FAIL_COUNT=$((FAIL_COUNT + 1))
+    elif [[ $test_status -ne 0 ]]; then
+      echo "!!! [Phase 2] Test failed (exit code: $test_status). Check log: $log_file"
       FAIL_COUNT=$((FAIL_COUNT + 1))
     else
-      echo ">>> [Phase 2] Test done. Results saved to: $log_file"
-      # --- 计算真实前缀缓存命中率并附加到日志（供 collect_results.py 解析） ---
-      # SGLang: /metrics 的 prefill_effective_tokens_total 计数器差值（含 HiCache L1/L2/L3）
-      #         覆盖 --cache-report 仅统计 L1 (radix cache) 的局限性
-      # vLLM:   /metrics 的 vllm:prefix_cache_* 计数器差值
-      if [[ "$FRAMEWORK" == "vllm" ]]; then
-        append_vllm_cache_report "$log_file" "$cache_pc_before"
-      elif [[ "$FRAMEWORK" == "sglang" ]]; then
-        append_sglang_cache_report "$log_file" "$cache_pc_before"
+      error_pattern="$(check_log_errors "$log_file")" || true
+      if [[ -n "$error_pattern" ]]; then
+        echo "!!! [Phase 2] Log error detected: '$error_pattern'. Check log: $log_file"
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+      else
+        echo ">>> [Phase 2] Test done. Results saved to: $log_file"
+        # --- 计算真实前缀缓存命中率并附加到日志（供 collect_results.py 解析） ---
+        # SGLang: /metrics 的 prefill_effective_tokens_total 计数器差值（含 HiCache L1/L2/L3）
+        #         覆盖 --cache-report 仅统计 L1 (radix cache) 的局限性
+        # vLLM:   /metrics 的 vllm:prefix_cache_* 计数器差值
+        if [[ "$FRAMEWORK" == "vllm" ]]; then
+          append_vllm_cache_report "$log_file" "$cache_pc_before"
+        elif [[ "$FRAMEWORK" == "sglang" ]]; then
+          append_sglang_cache_report "$log_file" "$cache_pc_before"
+        fi
       fi
     fi
-  fi
 
-  # 每次测试后等待指定时间
-  echo "--- Finished Concurrency=$concurrency, HitRate=${CACHE_HIT_RATE}%. Sleeping for $SLEEP_TIME seconds... ---"
-  sleep "$SLEEP_TIME"
+    # 每次测试后等待指定时间
+    echo "--- Finished Concurrency=$concurrency, Input=${input_len}, HitRate=${CACHE_HIT_RATE}%. Sleeping for $SLEEP_TIME seconds... ---"
+    sleep "$SLEEP_TIME"
+  done
 done
 
 echo ""
@@ -677,17 +682,27 @@ fi
 
 # --- 构建 BENCH_COMMANDS（循环模板，变量占位，用于报告第三部分） ---
 CONC_LIST="${concurrency_list[*]}"
+IO_QUOTED=""
+for io in "${io_combinations[@]}"; do
+  IO_QUOTED="${IO_QUOTED}\"$io\" "
+done
+IO_QUOTED="${IO_QUOTED% }"
 
 if [[ "$FRAMEWORK" == "sglang" ]]; then
   BENCH_COMMANDS="# 并发数列表: ${CONCURRENCY_STR}
+# IO 组合: ${IO_STR}
 # 缓存命中率: ${CACHE_HIT_RATE}% (前缀级)
-# 输入长度: ${INPUT_LEN}, 输出长度: ${OUTPUT_LEN}
-# 共享前缀长度: ${prefix_len} (命中), 唯一后缀长度: ${suffix_len} (未命中)
+# 共享前缀长度 = 输入长度 × ${CACHE_HIT_RATE} / 100（命中），其余为唯一后缀（未命中）
 # 方法: 两阶段（预热+测试）
 #   阶段1 预热: 1 个请求填共享前缀入缓存（不计量）
 #   阶段2 测试: N_total = 5×并发 个请求，每个请求前缀命中+后缀未命中
 for CONCURRENCY in ${CONC_LIST}; do
   N_TOTAL=\$(( CONCURRENCY * 5 ))
+  for IO in ${IO_QUOTED}; do
+  INPUT_LEN=\$(echo \"\$IO\" | awk '{print \$1}')
+  OUTPUT_LEN=\$(echo \"\$IO\" | awk '{print \$2}')
+  PREFIX_LEN=\$(( INPUT_LEN * ${CACHE_HIT_RATE} / 100 ))
+  SUFFIX_LEN=\$(( INPUT_LEN - PREFIX_LEN ))
   # 阶段1: 预热（串行，填缓存）
     $PYTHON_CMD -m sglang.benchmark.serving \\
     --backend sglang-oai-chat \\
@@ -697,8 +712,8 @@ for CONCURRENCY in ${CONC_LIST}; do
     --dataset-name generated-shared-prefix \\
     --gsp-num-groups 1 \\
     --gsp-prompts-per-group 1 \\
-    --gsp-system-prompt-len ${prefix_len} \\
-    --gsp-question-len ${suffix_len} \\
+    --gsp-system-prompt-len \$PREFIX_LEN \\
+    --gsp-question-len \$SUFFIX_LEN \\
     --gsp-output-len 1 \\
     --num-prompts 1 \\
     --max-concurrency 1 \\
@@ -713,25 +728,31 @@ for CONCURRENCY in ${CONC_LIST}; do
     --dataset-name generated-shared-prefix \\
     --gsp-num-groups 1 \\
     --gsp-prompts-per-group \$N_TOTAL \\
-    --gsp-system-prompt-len ${prefix_len} \\
-    --gsp-question-len ${suffix_len} \\
-    --gsp-output-len ${OUTPUT_LEN} \\
+    --gsp-system-prompt-len \$PREFIX_LEN \\
+    --gsp-question-len \$SUFFIX_LEN \\
+    --gsp-output-len \$OUTPUT_LEN \\
     --num-prompts \$N_TOTAL \\
     --max-concurrency \$CONCURRENCY \\
     --seed ${SEED} \\
     --cache-report \\
     --output-file \$JSONL_FILE
+  done
 done"
 elif [[ "$FRAMEWORK" == "vllm" ]]; then
   BENCH_COMMANDS="# 并发数列表: ${CONCURRENCY_STR}
+# IO 组合: ${IO_STR}
 # 缓存命中率: ${CACHE_HIT_RATE}% (前缀级)
-# 输入长度: ${INPUT_LEN}, 输出长度: ${OUTPUT_LEN}
-# 共享前缀长度: ${prefix_len} (命中), 唯一后缀长度: ${suffix_len} (未命中)
+# 共享前缀长度 = 输入长度 × ${CACHE_HIT_RATE} / 100（命中），其余为唯一后缀（未命中）
 # 方法: 两阶段（预热+测试）
 #   阶段1 预热: 1 个请求填共享前缀入缓存（不计量）
 #   阶段2 测试: N_total = 5×并发 个请求，每个请求前缀命中+后缀未命中
 for CONCURRENCY in ${CONC_LIST}; do
   N_TOTAL=\$(( CONCURRENCY * 5 ))
+  for IO in ${IO_QUOTED}; do
+  INPUT_LEN=\$(echo \"\$IO\" | awk '{print \$1}')
+  OUTPUT_LEN=\$(echo \"\$IO\" | awk '{print \$2}')
+  PREFIX_LEN=\$(( INPUT_LEN * ${CACHE_HIT_RATE} / 100 ))
+  SUFFIX_LEN=\$(( INPUT_LEN - PREFIX_LEN ))
   # 阶段1: 预热（串行，填缓存）
   vllm bench serve \\
     --backend openai-chat \\
@@ -740,8 +761,8 @@ for CONCURRENCY in ${CONC_LIST}; do
     --model \"\$MODEL_PATH\" \\
     --served-model-name \"\$SERVED_MODEL_NAME\" \\
     --dataset-name prefix_repetition \\
-    --prefix-repetition-prefix-len ${prefix_len} \\
-    --prefix-repetition-suffix-len ${suffix_len} \\
+    --prefix-repetition-prefix-len \$PREFIX_LEN \\
+    --prefix-repetition-suffix-len \$SUFFIX_LEN \\
     --prefix-repetition-num-prefixes 1 \\
     --prefix-repetition-output-len 1 \\
     --num-prompts 1 \\
@@ -759,10 +780,10 @@ for CONCURRENCY in ${CONC_LIST}; do
     --model \"\$MODEL_PATH\" \\
     --served-model-name \"\$SERVED_MODEL_NAME\" \\
     --dataset-name prefix_repetition \\
-    --prefix-repetition-prefix-len ${prefix_len} \\
-    --prefix-repetition-suffix-len ${suffix_len} \\
+    --prefix-repetition-prefix-len \$PREFIX_LEN \\
+    --prefix-repetition-suffix-len \$SUFFIX_LEN \\
     --prefix-repetition-num-prefixes 1 \\
-    --prefix-repetition-output-len ${OUTPUT_LEN} \\
+    --prefix-repetition-output-len \$OUTPUT_LEN \\
     --num-prompts \$N_TOTAL \\
     --max-concurrency \$CONCURRENCY \\
     --trust-remote-code \\
@@ -770,6 +791,7 @@ for CONCURRENCY in ${CONC_LIST}; do
     --seed ${SEED} \\
     --metric_percentiles 90,95,99 \\
     --ready-check-timeout-sec 30
+  done
 done"
 fi
 

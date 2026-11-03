@@ -38,9 +38,9 @@ BACKGROUND=true
 TIMEOUT=3600
 
 # 并发数列表（同时也是 num-prompts 的值）
-DEFAULT_CONCURRENCY="1,4,8,16,32,64,128"
+DEFAULT_CONCURRENCY="1,8,32,64,128"
 # 输入输出长度组合，格式 "in_len out_len"，组合之间逗号分隔
-DEFAULT_IO="8192 512,32768 512,65536 512"
+DEFAULT_IO="8192 512,32768 512,65536 512,131072 1024,262144 1024,512000 1024,1000000 1024"
 
 # --- 参数解析 ---
 usage() {
@@ -58,7 +58,8 @@ Usage: $0 -F <sglang|vllm> [OPTIONS]
 
 可选参数:
   -r, --report-dir DIR          报告输出目录        (default: ./{framework}_reports)
-  -c, --concurrency LIST        并发数列表(逗号分隔) (default: $DEFAULT_CONCURRENCY)
+  -c, --concurrency LIST        并发数列表(逗号分隔,各IO组合按输入长度限上限: ≤64K全档/128K~256K≤64/512K≤32/1M≤16)
+                                (default: $DEFAULT_CONCURRENCY)
   -i, --io-combinations LIST    IO组合(逗号分隔,每组"in out")
                                   (default: $DEFAULT_IO)
   -s, --sleep SECONDS           每次测试间隔秒数    (default: $SLEEP_TIME)
@@ -208,6 +209,20 @@ IFS=',' read -ra concurrency_list <<< "$CONCURRENCY_STR"
 # --- 构建 IO 组合列表 ---
 IO_STR="${IO_ARG:-$DEFAULT_IO}"
 IFS=',' read -ra io_combinations <<< "$IO_STR"
+
+# --- 各 IO 组合的并发数上限（按输入长度限制并发档位，超出自动跳过）---
+io_concurrency_cap() {
+  local in_len=$1
+  if [[ "$in_len" -le 65536 ]]; then
+    echo 128      # 8K/32K/64K：全档位
+  elif [[ "$in_len" -le 262144 ]]; then
+    echo 64       # 128K/256K：移除 128
+  elif [[ "$in_len" -le 512000 ]]; then
+    echo 32       # 512K：移除 64/128
+  else
+    echo 16       # 1M：移除 32 及以上
+  fi
+}
 
 # --- 提取模型服务名最后一段（以 / \ 分割），并清除残留 : \，用于目录创建 ---
 safe_model_name=$(echo "$SERVED_MODEL_NAME" | sed 's/.*[\/\\]//; s/[:\\]//g')
@@ -485,6 +500,13 @@ for concurrency in "${concurrency_list[@]}"; do
     input_len=$(echo "$combo" | awk '{print $1}')
     output_len=$(echo "$combo" | awk '{print $2}')
 
+    # 并发档位上限：该组合超出上限档位时跳过（见 io_concurrency_cap）
+    conc_cap=$(io_concurrency_cap "$input_len")
+    if [[ "$concurrency" -gt "$conc_cap" ]]; then
+      echo ">>> Skip: Input=$input_len, Concurrency=$concurrency > cap $conc_cap"
+      continue
+    fi
+
     # 构建日志文件路径
     log_file="${RUN_DIR}/bench_bs-${num_prompts}_input_len-${input_len}-output_len-${output_len}.log"
     jsonl_file="${RUN_DIR}/bench_bs-${num_prompts}_input_len-${input_len}-output_len-${output_len}.jsonl"
@@ -595,6 +617,7 @@ IO_QUOTED="${IO_QUOTED% }"
 if [[ "$FRAMEWORK" == "sglang" ]]; then
   BENCH_COMMANDS="# 并发数列表: ${CONCURRENCY_STR}
 # IO 组合: ${IO_STR}
+# 并发档位按输入长度限上限: ≤64K 全档 / 128K~256K ≤64 / 512K ≤32 / 1M ≤16（超出自动跳过）
 # 注: 脚本在每组测试前后查询服务端 /metrics 的 sglang:prefill_effective_tokens_total
 #     计数器，差值计算真实前缀缓存命中率（含 HiCache L1/L2/L3）并写入日志
 for CONCURRENCY in ${CONC_LIST}; do
@@ -602,6 +625,8 @@ for CONCURRENCY in ${CONC_LIST}; do
   for IO in ${IO_QUOTED}; do
     INPUT_LEN=\$(echo \"\$IO\" | awk '{print \$1}')
     OUTPUT_LEN=\$(echo \"\$IO\" | awk '{print \$2}')
+    CONC_CAP=\$(io_concurrency_cap \"\$INPUT_LEN\")
+    [[ \"\$CONCURRENCY\" -gt \"\$CONC_CAP\" ]] && continue
     $PYTHON_CMD -m sglang.benchmark.serving \\
       --backend sglang-oai-chat \\
       --base-url \"\$BASE_URL\" \\
@@ -620,6 +645,7 @@ done"
 elif [[ "$FRAMEWORK" == "vllm" ]]; then
   BENCH_COMMANDS="# 并发数列表: ${CONCURRENCY_STR}
 # IO 组合: ${IO_STR}
+# 并发档位按输入长度限上限: ≤64K 全档 / 128K~256K ≤64 / 512K ≤32 / 1M ≤16（超出自动跳过）
 # 注: 脚本在每组测试前后查询服务端 /metrics 的 vllm:prefix_cache_* 计数器，
 #     差值计算真实前缀缓存命中率并写入日志（报告中 L1命中率/L3命中率列为实测值）
 for CONCURRENCY in ${CONC_LIST}; do
@@ -627,6 +653,8 @@ for CONCURRENCY in ${CONC_LIST}; do
   for IO in ${IO_QUOTED}; do
     INPUT_LEN=\$(echo \"\$IO\" | awk '{print \$1}')
     OUTPUT_LEN=\$(echo \"\$IO\" | awk '{print \$2}')
+    CONC_CAP=\$(io_concurrency_cap \"\$INPUT_LEN\")
+    [[ \"\$CONCURRENCY\" -gt \"\$CONC_CAP\" ]] && continue
     vllm bench serve \\
       --backend openai-chat \\
       --endpoint /v1/chat/completions \\

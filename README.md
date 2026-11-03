@@ -113,8 +113,8 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 | `--base-url` | `-u` | ✅ | — | 推理服务地址 |
 | `--model-path` | `-m` | ✅ | — | 模型路径 |
 | `--served-model-name` | `-n` | ✅ | — | 服务模型名 |
-| `--concurrency` | `-c` | | `1,4,8,16,32,64,128` | 并发数列表（num_prompts = 并发数，请求数与并发数相同） |
-| `--io-combinations` | `-i` | | `8192 512,32768 512,65536 512` | IO 组合（逗号分隔，每组 `"输入 输出"`） |
+| `--concurrency` | `-c` | | `1,8,32,64,128` | 并发数列表（num_prompts = 并发数，请求数与并发数相同；各 IO 组合按输入长度限并发上限：≤64K 全档 / 128K~256K ≤64 / 512K ≤32 / 1M ≤16，超出档位自动跳过） |
+| `--io-combinations` | `-i` | | `8192 512,32768 512,65536 512,131072 1024,262144 1024,512000 1024,1000000 1024` | IO 组合（逗号分隔，每组 `"输入 输出"`） |
 | `--chip-type` | `-t` | ✅ | — | 芯片类型（CSV 列名后缀，如 `H100`） |
 | `--tester` | `-T` | ✅ | — | 测试人员（用于报告目录层级和报告命名） |
 | `--pd` | `-P` | ✅ | — | PD部署模式: `agg`(非PD分离) 或 `disagg`(PD分离) |
@@ -192,8 +192,8 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 | `--base-url` | `-u` | ✅ | — | 推理服务地址 |
 | `--model-path` | `-m` | ✅ | — | 模型路径 |
 | `--served-model-name` | `-n` | ✅ | — | 服务模型名 |
-| `--io-combinations` | `-i` | | `65536 1` | IO 组合（逗号分隔，每组 `"输入 输出"`） |
-| `--concurrency` | `-c` | | `1,4,8,16,32,64,128` | 并发数列表（num_prompts = 5×并发数） |
+| `--io-combinations` | `-i` | | `65536 1,131072 1,262144 1` | IO 组合（逗号分隔，每组 `"输入 输出"`） |
+| `--concurrency` | `-c` | | `1,8,32,64,128` | 并发数列表（num_prompts = 5×并发数；各 IO 组合按输入长度限并发上限：≤64K 全档 / 128K~256K ≤64，超出档位自动跳过） |
 | `--chip-type` | `-t` | ✅ | — | 芯片类型（CSV 列名后缀） |
 | `--tester` | `-T` | ✅ | — | 测试人员（用于报告目录层级和报告命名） |
 | `--pd` | `-P` | ✅ | — | PD部署模式: `agg`(非PD分离) 或 `disagg`(PD分离) |
@@ -245,9 +245,8 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
   -u http://127.0.0.1:8080 \
   -m /data1/GLM-5.2-Channel-FP8-w8a8 \
   -n glm-5.2-fp8 -t H100 \
-  -p 8192,32768,65536 \
-  -o 512 \
-  -c 1,4,8,16,32,64,128 \
+  -p 8192,32768,65536,131072,262144 \
+  -c 1,8,32,64,128 \
   -T zhangsan -P agg
 
 # vLLM 纯 Decode（使用 prefix_repetition 数据集）
@@ -255,9 +254,8 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
   -u http://127.0.0.1:8000 \
   -m /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
   -n glm-5.2-fp8 -t H100 \
-  -p 8192,32768,65536 \
-  -o 512 \
-  -c 1,4,8,16,32,64,128 \
+  -p 8192,32768,65536,131072,262144 \
+  -c 1,8,32,64,128 \
   -T zhangsan -P agg
 ```
 
@@ -283,9 +281,9 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 | `--base-url` | `-u` | ✅ | — | 推理服务地址 |
 | `--model-path` | `-m` | ✅ | — | 模型路径 |
 | `--served-model-name` | `-n` | ✅ | — | 服务模型名 |
-| `--prefix-lens` | `-p` | | `8192,32768,65536` | 前缀长度列表 |
-| `--output-lens` | `-o` | | `512` | 输出长度列表 |
-| `--concurrency` | `-c` | | `1,4,8,16,32,64,128` | 并发数列表（num_prompts = 10×并发数） |
+| `--prefix-lens` | `-p` | | `8192,32768,65536,131072,262144` | 前缀长度列表 |
+| `--output-lens` | `-o` | | —（按前缀组配对） | 输出长度列表；缺省时 ≤64K 前缀 → 512、128K~256K 前缀 → 1024，显式指定则前缀 × 输出全交叉 |
+| `--concurrency` | `-c` | | `1,8,32,64,128` | 并发数列表（num_prompts = 10×并发数） |
 | `--chip-type` | `-t` | ✅ | — | 芯片类型（CSV 列名后缀） |
 | `--tester` | `-T` | ✅ | — | 测试人员（用于报告目录层级和报告命名） |
 | `--pd` | `-P` | ✅ | — | PD部署模式: `agg`(非PD分离) 或 `disagg`(PD分离) |
@@ -338,8 +336,9 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 
 > 前缀级命中：每个请求都部分命中缓存，TTFT 均匀分布（不像请求级方案有双峰分布）。
 > 共享前缀长度 = 输入长度 × 命中率，唯一后缀长度 = 输入长度 - 共享前缀长度。
+> 上表以 64K 组为例；131072 / 262144 组按同比例计算（90% → 117964/13108、235929/26215）。
 
-固定输入 64K、输出 512，并发数逐级递增。
+3 组 IO 组合（65536/512、131072/1024、262144/1024），并发数逐级递增；262144 组要求模型上下文 ≥ 263168。
 
 ### 服务端要求
 
@@ -382,7 +381,8 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 | `--tester` | `-T` | ✅ | — | 测试人员（用于报告目录层级和报告命名） |
 | `--pd` | `-P` | ✅ | — | PD部署模式: `agg`(非PD分离) 或 `disagg`(PD分离) |
 | `--report-dir` | `-r` | | `./{framework}_cache_reports` | 报告输出目录 |
-| `--concurrency` | `-c` | | `1,4,8,16,32,64,128` | 并发数列表（测试请求数 N_total = 5×并发数；另有预热 1 请求，不计量） |
+| `--concurrency` | `-c` | | `1,8,32,64,128` | 并发数列表（测试请求数 N_total = 5×并发数；另有预热 1 请求，不计量） |
+| `--io-combinations` | `-i` | | `65536 512,131072 1024,262144 1024` | IO 组合（逗号分隔，每组 `"输入 输出"`；共享前缀/唯一后缀按各组输入长度计算） |
 | `--cache-hit-rate` | `-R` | | `90` | 缓存命中率百分比（1~99），前缀级命中 |
 | `--sleep` | `-s` | | `60` | 每组测试间隔（秒） |
 | `--describe` | `-d` | | — | 模型描述信息（可选，填入报告末尾单独章节） |
@@ -391,7 +391,7 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 
 ### 产物
 
-- 预热日志（不计量）：`{report-dir}/{tester}/{model_name}/{TS}/cache_bs-{concurrency}_hit-{rate}_warmup.log`
+- 预热日志（不计量）：`{report-dir}/{tester}/{model_name}/{TS}/cache_bs-{concurrency}_hit-{rate}_input-{in}_warmup.log`
 - 测试日志（计量）：`{report-dir}/{tester}/{model_name}/{TS}/cache_bs-{concurrency}_hit-{rate}_input-{in}-output-{out}.log`
 - CSV：`{report-dir}/{tester}/{model_name}/{TS}/cache_results.csv`（仅收集测试日志，自动跳过预热日志）
 - Markdown 报告：`{report-dir}/{tester}/{model_name}/{TS}/{tester}_{model_name}_{chip_type}_{framework}_{pd}_cache_{TS}.md`
@@ -483,7 +483,7 @@ python3 _scripts/csv_to_md.py \
 | **脚本** | `bench.sh` | `prefill_bench.sh` | `decode_bench.sh` | `cache_bench.sh` |
 | **报告标题** | （基础 Benchmark 测试） | （纯 Prefill 测试） | （纯 Decode 测试） | （指定缓存命中率测试） |
 | **测试目标** | 端到端性能 | prefill 前向算力 | decode 迭代性能 | 指定前缀命中率下推理性能 |
-| **output_len** | 512 | 1（固定） | 512 | 512 |
+| **output_len** | 512（≤64K 组）/ 1024（128K~1M 组） | 1（固定） | 512（≤64K 组）/ 1024（128K~256K 组） | 512（64K 组）/ 1024（128K~256K 组） |
 | **前缀缓存** | **关** | **关** | **开** | **开** |
 | **数据集** | `random-ids`/`random`（随机，无共享前缀） | `random-ids`/`random`（随机，无共享前缀） | `generated-shared-prefix`/`prefix_repetition`（共享前缀） | `generated-shared-prefix`/`prefix_repetition`（共享前缀） |
 | **num_prompts** | = 并发数 | = 5×并发数 | = 10×并发数 | N_total = 5×并发数（另预热 1 请求，不计量） |
