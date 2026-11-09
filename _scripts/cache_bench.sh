@@ -16,20 +16,20 @@ set -euo pipefail
 #
 # 两阶段测试：
 #   阶段 1 — 预热（不计量）：
-#     用 concurrency=1 发送 1 个请求，将共享前缀填入缓存
+#     用 concurrency=1 串行发送 G 个请求（每组 1 条），将 G 个共享前缀填入缓存
 #   阶段 2 — 测试（计量）：
 #     用目标并发发送 N_total = 5 × 并发数 个请求
-#     所有请求共享同一前缀（命中），各有不同后缀（未命中）
+#     每组内请求共享该组前缀（命中），各有不同后缀（未命中）
 #
 # 数据集选择：
 #   SGLang: generated-shared-prefix (GSP)
-#     --gsp-num-groups 1               只有 1 个共享前缀组
-#     --gsp-prompts-per-group N_total  每组 N_total 个请求（各有不同 question）
-#     --gsp-system-prompt-len PL       共享前缀长度 = 输入 × 命中率
-#     --gsp-question-len QL            每请求唯一后缀长度 = 输入 × (1-命中率)
-#     --gsp-output-len 512             输出长度
+#     --gsp-num-groups $GSP_NUM_GROUPS        共享前缀组数（-g 可配，默认 1；组内共享，组间不同）
+#     --gsp-prompts-per-group N_per_group     每组 N_per_group 个请求（各有不同 question）
+#     --gsp-system-prompt-len PL               共享前缀长度 = 输入 × 命中率
+#     --gsp-question-len QL                   每请求唯一后缀长度 = 输入 × (1-命中率)
+#     --gsp-output-len 512                    输出长度
 #   vLLM: prefix_repetition
-#     --prefix-repetition-num-prefixes 1   只有 1 个共享前缀
+#     --prefix-repetition-num-prefixes $GSP_NUM_GROUPS   共享前缀组数（同上）
 #     --prefix-repetition-prefix-len PL    共享前缀长度
 #     --prefix-repetition-suffix-len SL    每请求唯一后缀长度（随机生成，每请求不同）
 #     --prefix-repetition-output-len 512   输出长度
@@ -59,6 +59,8 @@ DEFAULT_CACHE_HIT_RATE=90
 DEFAULT_IO="65536 512,131072 1024,262144 1024"
 # 并发数列表
 DEFAULT_CONCURRENCY="1,8,32,64,128"
+# 共享前缀组数（每组内请求共享该组前缀，组间前缀不同）
+GSP_NUM_GROUPS=1
 
 # --- 参数解析 ---
 usage() {
@@ -83,6 +85,8 @@ Usage: $0 -F <sglang|vllm> [OPTIONS]
   -r, --report-dir DIR          报告输出目录        (default: ./{framework}_cache_reports)
   -c, --concurrency LIST        并发数列表(逗号分隔) (default: $DEFAULT_CONCURRENCY)
   -i, --io-combinations LIST    IO组合(逗号分隔,每组"in out") (default: $DEFAULT_IO)
+  -g, --gsp-num-groups N        共享前缀组数(组内请求共享同一前缀,组间前缀不同) (default: 1)
+                                  预热阶段每组发 1 条请求填前缀；测试请求总数 = 每组条数 × N，每组条数 = ceil(5×并发/N)
   -R, --cache-hit-rate PCT      缓存命中率百分比     (default: $DEFAULT_CACHE_HIT_RATE)
                                   如 90 表示每个请求 90% 前缀命中、10% 后缀未命中
                                   共享前缀长度 = 输入长度 × PCT/100
@@ -109,6 +113,7 @@ while [[ $# -gt 0 ]]; do
     -r|--report-dir)          REPORT_DIR="$2";           shift 2 ;;
     -c|--concurrency)         CONCURRENCY_ARG="$2";      shift 2 ;;
     -i|--io-combinations)     IO_ARG="$2";              shift 2 ;;
+    -g|--gsp-num-groups)      GSP_NUM_GROUPS="$2";       shift 2 ;;
     -R|--cache-hit-rate)      CACHE_HIT_RATE="$2";       shift 2 ;;
     -s|--sleep)               SLEEP_TIME="$2";           shift 2 ;;
     -d|--describe)            DESCRIBE="$2";             shift 2 ;;
@@ -181,6 +186,12 @@ if ! [[ "$CACHE_HIT_RATE" =~ ^[0-9]+$ ]] || [[ "$CACHE_HIT_RATE" -lt 1 ]] || [[ 
   exit 1
 fi
 
+# --- 校验共享前缀组数 ---
+if ! [[ "$GSP_NUM_GROUPS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "ERROR: --gsp-num-groups 必须为 >=1 的整数，当前值: '$GSP_NUM_GROUPS'" >&2
+  exit 1
+fi
+
 # --- 前置校验：serve_command.sh ---
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
@@ -219,6 +230,7 @@ if [[ "$BACKGROUND" == "true" ]]; then
     --concurrency "${CONCURRENCY_ARG:-$DEFAULT_CONCURRENCY}" \
     --io-combinations "${IO_ARG:-$DEFAULT_IO}" \
     --cache-hit-rate "$CACHE_HIT_RATE" \
+    --gsp-num-groups "$GSP_NUM_GROUPS" \
     --sleep "$SLEEP_TIME" \
     --chip-type "$CHIP_TYPE" \
     --tester "$TESTER" \
@@ -262,6 +274,7 @@ echo "=== Report Dir:     $RUN_DIR"
 echo "=== Concurrency:    ${concurrency_list[*]}"
 echo "=== IO Combinations: ${IO_STR}"
 echo "=== Cache Hit Rate: ${CACHE_HIT_RATE}% (prefix-level)"
+echo "=== GSP Groups:     $GSP_NUM_GROUPS (per group shares one prefix)"
 echo "=== Chip Type:      ${CHIP_TYPE:-(未指定)}"
 echo "=== Tester:         $TESTER"
 echo "=== PD Mode:        $PD"
@@ -491,7 +504,10 @@ append_sglang_cache_report() {
 # --- 外层循环：遍历不同的并发值 ---
 for concurrency in "${concurrency_list[@]}"; do
   # N_total = 测试阶段总请求数 = 5 × 并发数（增加统计样本，提高测量稳定性）
-  N_total=$(( concurrency * 5 ))
+  # GSP_NUM_GROUPS > 1 时按组均摊（向上取整），实际总数 = 每组条数 × 组数
+  base_total=$(( concurrency * 5 ))
+  per_group_prompts=$(( (base_total + GSP_NUM_GROUPS - 1) / GSP_NUM_GROUPS ))
+  N_total=$(( per_group_prompts * GSP_NUM_GROUPS ))
 
   for combo in "${io_combinations[@]}"; do
     input_len=$(echo "$combo" | awk '{print $1}')
@@ -511,11 +527,11 @@ for concurrency in "${concurrency_list[@]}"; do
 
     # ============================================================
     # 阶段 1：预热（不计量）
-    # 用 concurrency=1 发送 1 个请求，将共享前缀填入缓存
-    # 使用与阶段 2 相同的 seed 和 gsp-num-groups=1，确保前缀相同
+    # 用 concurrency=1 串行发送 GSP_NUM_GROUPS 个请求（每组 1 条），将各组共享前缀填入缓存
+    # 使用与阶段 2 相同的 seed / 组数 / 前缀长度，确保前缀相同
     # ============================================================
     echo ""
-    echo ">>> [Phase 1] Pre-warming: sending 1 request at concurrency=1 (fills shared prefix into cache)..."
+    echo ">>> [Phase 1] Pre-warming: sending $GSP_NUM_GROUPS request(s) at concurrency=1 (fills $GSP_NUM_GROUPS shared prefix(es) into cache)..."
     echo ">>> Warmup log: $warmup_log"
 
     if [[ "$FRAMEWORK" == "sglang" ]]; then
@@ -526,12 +542,12 @@ for concurrency in "${concurrency_list[@]}"; do
         --model "$MODEL_PATH" \
         --served-model-name "$SERVED_MODEL_NAME" \
         --dataset-name generated-shared-prefix \
-        --gsp-num-groups 1 \
+        --gsp-num-groups "$GSP_NUM_GROUPS" \
         --gsp-prompts-per-group 1 \
         --gsp-system-prompt-len "$prefix_len" \
         --gsp-question-len "$suffix_len" \
         --gsp-output-len 1 \
-        --num-prompts 1 \
+        --num-prompts "$GSP_NUM_GROUPS" \
         --max-concurrency 1 \
         --seed "$SEED" \
         --output-file "$warmup_jsonl" \
@@ -549,9 +565,9 @@ for concurrency in "${concurrency_list[@]}"; do
         --dataset-name prefix_repetition \
         --prefix-repetition-prefix-len "$prefix_len" \
         --prefix-repetition-suffix-len "$suffix_len" \
-        --prefix-repetition-num-prefixes 1 \
+        --prefix-repetition-num-prefixes "$GSP_NUM_GROUPS" \
         --prefix-repetition-output-len 1 \
-        --num-prompts 1 \
+        --num-prompts "$GSP_NUM_GROUPS" \
         --max-concurrency 1 \
         --trust-remote-code \
         --temperature 0.7 \
@@ -576,7 +592,7 @@ for concurrency in "${concurrency_list[@]}"; do
       sleep "$SLEEP_TIME"
       continue
     fi
-    echo ">>> [Phase 1] Warmup done. Shared prefix (${prefix_len} tokens) cached."
+    echo ">>> [Phase 1] Warmup done. $GSP_NUM_GROUPS shared prefix(es) (${prefix_len} tokens each) cached."
 
     # --- 测试前抓取服务端前缀缓存计数器（与测试后差值计算真实命中率） ---
     if [[ "$FRAMEWORK" == "vllm" ]]; then
@@ -588,7 +604,7 @@ for concurrency in "${concurrency_list[@]}"; do
     # ============================================================
     # 阶段 2：测试（计量）
     # 用目标并发发送 N_total 个请求
-    # 所有请求共享同一前缀（命中 ${CACHE_HIT_RATE}%），各有不同后缀（未命中 ${suffix_len} tokens）
+    # 每组内请求共享该组前缀（命中 ${CACHE_HIT_RATE}%），各有不同后缀（未命中 ${suffix_len} tokens）
     # 每个请求需 prefill ${suffix_len} tokens（唯一后缀）
     # ============================================================
     echo ""
@@ -604,8 +620,8 @@ for concurrency in "${concurrency_list[@]}"; do
         --model "$MODEL_PATH" \
         --served-model-name "$SERVED_MODEL_NAME" \
         --dataset-name generated-shared-prefix \
-        --gsp-num-groups 1 \
-        --gsp-prompts-per-group "$N_total" \
+        --gsp-num-groups "$GSP_NUM_GROUPS" \
+        --gsp-prompts-per-group "$per_group_prompts" \
         --gsp-system-prompt-len "$prefix_len" \
         --gsp-question-len "$suffix_len" \
         --gsp-output-len "$output_len" \
@@ -628,7 +644,7 @@ for concurrency in "${concurrency_list[@]}"; do
         --dataset-name prefix_repetition \
         --prefix-repetition-prefix-len "$prefix_len" \
         --prefix-repetition-suffix-len "$suffix_len" \
-        --prefix-repetition-num-prefixes 1 \
+        --prefix-repetition-num-prefixes "$GSP_NUM_GROUPS" \
         --prefix-repetition-output-len "$output_len" \
         --num-prompts "$N_total" \
         --max-concurrency "$concurrency" \
@@ -692,12 +708,14 @@ if [[ "$FRAMEWORK" == "sglang" ]]; then
   BENCH_COMMANDS="# 并发数列表: ${CONCURRENCY_STR}
 # IO 组合: ${IO_STR}
 # 缓存命中率: ${CACHE_HIT_RATE}% (前缀级)
+# 共享前缀组数: ${GSP_NUM_GROUPS}（组内请求共享该组前缀，组间不同）
 # 共享前缀长度 = 输入长度 × ${CACHE_HIT_RATE} / 100（命中），其余为唯一后缀（未命中）
 # 方法: 两阶段（预热+测试）
-#   阶段1 预热: 1 个请求填共享前缀入缓存（不计量）
-#   阶段2 测试: N_total = 5×并发 个请求，每个请求前缀命中+后缀未命中
+#   阶段1 预热: 每组 1 个请求填该组共享前缀入缓存（共 ${GSP_NUM_GROUPS} 组，不计量）
+#   阶段2 测试: N_total = 5×并发 个请求（每组条数向上取整），每个请求前缀命中+后缀未命中
 for CONCURRENCY in ${CONC_LIST}; do
-  N_TOTAL=\$(( CONCURRENCY * 5 ))
+  PER_GROUP=\$(( (CONCURRENCY * 5 + ${GSP_NUM_GROUPS} - 1) / ${GSP_NUM_GROUPS} ))
+  N_TOTAL=\$((PER_GROUP * ${GSP_NUM_GROUPS}))
   for IO in ${IO_QUOTED}; do
   INPUT_LEN=\$(echo \"\$IO\" | awk '{print \$1}')
   OUTPUT_LEN=\$(echo \"\$IO\" | awk '{print \$2}')
@@ -710,12 +728,12 @@ for CONCURRENCY in ${CONC_LIST}; do
     --model \"\$MODEL_PATH\" \\
     --served-model-name \"\$SERVED_MODEL_NAME\" \\
     --dataset-name generated-shared-prefix \\
-    --gsp-num-groups 1 \\
+    --gsp-num-groups ${GSP_NUM_GROUPS} \\
     --gsp-prompts-per-group 1 \\
     --gsp-system-prompt-len \$PREFIX_LEN \\
     --gsp-question-len \$SUFFIX_LEN \\
     --gsp-output-len 1 \\
-    --num-prompts 1 \\
+    --num-prompts ${GSP_NUM_GROUPS} \\
     --max-concurrency 1 \\
     --seed ${SEED} \\
     --output-file \$WARMUP_JSONL
@@ -726,8 +744,8 @@ for CONCURRENCY in ${CONC_LIST}; do
     --model \"\$MODEL_PATH\" \\
     --served-model-name \"\$SERVED_MODEL_NAME\" \\
     --dataset-name generated-shared-prefix \\
-    --gsp-num-groups 1 \\
-    --gsp-prompts-per-group \$N_TOTAL \\
+    --gsp-num-groups ${GSP_NUM_GROUPS} \\
+    --gsp-prompts-per-group \$PER_GROUP \\
     --gsp-system-prompt-len \$PREFIX_LEN \\
     --gsp-question-len \$SUFFIX_LEN \\
     --gsp-output-len \$OUTPUT_LEN \\
@@ -742,12 +760,14 @@ elif [[ "$FRAMEWORK" == "vllm" ]]; then
   BENCH_COMMANDS="# 并发数列表: ${CONCURRENCY_STR}
 # IO 组合: ${IO_STR}
 # 缓存命中率: ${CACHE_HIT_RATE}% (前缀级)
+# 共享前缀组数: ${GSP_NUM_GROUPS}（组内请求共享该组前缀，组间不同）
 # 共享前缀长度 = 输入长度 × ${CACHE_HIT_RATE} / 100（命中），其余为唯一后缀（未命中）
 # 方法: 两阶段（预热+测试）
-#   阶段1 预热: 1 个请求填共享前缀入缓存（不计量）
-#   阶段2 测试: N_total = 5×并发 个请求，每个请求前缀命中+后缀未命中
+#   阶段1 预热: 每组 1 个请求填该组共享前缀入缓存（共 ${GSP_NUM_GROUPS} 组，不计量）
+#   阶段2 测试: N_total = 5×并发 个请求（每组条数向上取整），每个请求前缀命中+后缀未命中
 for CONCURRENCY in ${CONC_LIST}; do
-  N_TOTAL=\$(( CONCURRENCY * 5 ))
+  PER_GROUP=\$(( (CONCURRENCY * 5 + ${GSP_NUM_GROUPS} - 1) / ${GSP_NUM_GROUPS} ))
+  N_TOTAL=\$((PER_GROUP * ${GSP_NUM_GROUPS}))
   for IO in ${IO_QUOTED}; do
   INPUT_LEN=\$(echo \"\$IO\" | awk '{print \$1}')
   OUTPUT_LEN=\$(echo \"\$IO\" | awk '{print \$2}')
@@ -763,9 +783,9 @@ for CONCURRENCY in ${CONC_LIST}; do
     --dataset-name prefix_repetition \\
     --prefix-repetition-prefix-len \$PREFIX_LEN \\
     --prefix-repetition-suffix-len \$SUFFIX_LEN \\
-    --prefix-repetition-num-prefixes 1 \\
+    --prefix-repetition-num-prefixes ${GSP_NUM_GROUPS} \\
     --prefix-repetition-output-len 1 \\
-    --num-prompts 1 \\
+    --num-prompts ${GSP_NUM_GROUPS} \\
     --max-concurrency 1 \\
     --trust-remote-code \\
     --temperature 0.7 \\
@@ -782,7 +802,7 @@ for CONCURRENCY in ${CONC_LIST}; do
     --dataset-name prefix_repetition \\
     --prefix-repetition-prefix-len \$PREFIX_LEN \\
     --prefix-repetition-suffix-len \$SUFFIX_LEN \\
-    --prefix-repetition-num-prefixes 1 \\
+    --prefix-repetition-num-prefixes ${GSP_NUM_GROUPS} \\
     --prefix-repetition-output-len \$OUTPUT_LEN \\
     --num-prompts \$N_TOTAL \\
     --max-concurrency \$CONCURRENCY \\

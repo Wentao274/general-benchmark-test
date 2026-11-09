@@ -1553,6 +1553,11 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
   -n glm-5.2-fp8 -t H100 \
   -p 8192,65536 -o 512 -c 1,16,128 \
   -T zhangsan -P agg
+
+# 4 组共享前缀（组内共享、组间不同）
+./decode_bench.sh -F sglang \
+  -u http://127.0.0.1:8080 -m /data1/GLM-5.2-Channel-FP8-w8a8 \
+  -n glm-5.2-fp8 -t H100 -p 8192 -c 1,8 -g 4 -T zhangsan -P agg
 ```
 
 **参数说明**：
@@ -1566,6 +1571,7 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 | `--prefix-lens` | `-p` | | `8192,32768,65536,131072,262144` | 前缀长度列表 |
 | `--output-lens` | `-o` | | —（按前缀组配对） | 输出长度列表；缺省时 ≤64K 前缀 → 512、128K~256K 前缀 → 1024，显式指定则前缀 × 输出全交叉 |
 | `--concurrency` | `-c` | | `1,8,32,64,128` | 并发数列表（num_prompts = 10×并发数） |
+| `--gsp-num-groups` | `-g` | | `1` | 共享前缀组数（组内请求共享同一前缀，组间不同；每组条数 = ceil(10×并发数/组数)，总请求数 = 每组条数 × 组数） |
 | `--chip-type` | `-t` | ✅ | — | 芯片类型（CSV 列名后缀） |
 | `--tester` | `-T` | ✅ | — | 测试人员（用于报告目录层级和报告命名） |
 | `--pd` | `-P` | ✅ | — | PD部署模式: `agg`(非PD分离) 或 `disagg`(PD分离) |
@@ -1578,26 +1584,26 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 核心命令（SGLang — `generated-shared-prefix`）：
 
 ```bash
-# GSP 数据集：所有请求共享同一前缀，保证缓存命中
+# GSP 数据集：组内请求共享同一前缀（组数 --gsp-num-groups/-g，默认 1），保证组内缓存命中
 python -m sglang.benchmark.serving \
   --backend sglang-oai-chat \
   --base-url "$BASE_URL" \
   --model "$MODEL_PATH" \
   --served-model-name "$SERVED_MODEL_NAME" \
   --dataset-name generated-shared-prefix \
-  --gsp-num-groups 1                    \   # 1 组 → 所有请求共享同一前缀
-  --gsp-prompts-per-group $num_prompts \   # = 10 × 并发数，增加样本量提高统计稳定性
+  --gsp-num-groups $gsp_groups           \   # 共享前缀组数（-g 指定，默认 1；组内共享，组间不同）
+  --gsp-prompts-per-group $per_group     \   # = ceil(10×并发/组数)，增加样本量提高统计稳定性
   --gsp-system-prompt-len $prefix_len   \   # 共享前缀长度
   --gsp-question-len 1                  \   # 每请求仅 1 个新 token
   --gsp-output-len $output_len           \   # 512 / 1024（按前缀组配对）
-  --num-prompts $num_prompts --max-concurrency $concurrency \   # num_prompts = 10 × 并发数
+  --num-prompts $num_prompts --max-concurrency $concurrency \   # 总请求数 = 每组条数 × 组数
   --seed 123
 ```
 
 核心命令（vLLM — `prefix_repetition`）：
 
 ```bash
-# prefix_repetition 数据集：num-prefixes=1 → 所有请求共享同一前缀
+# prefix_repetition 数据集：num-prefixes = 共享前缀组数（-g 指定，默认 1）
 vllm bench serve \
   --backend openai-chat --endpoint /v1/chat/completions \
   --base-url "$BASE_URL" \
@@ -1606,9 +1612,9 @@ vllm bench serve \
   --dataset-name prefix_repetition \
   --prefix-repetition-prefix-len $prefix_len   \   # 共享前缀长度
   --prefix-repetition-suffix-len 1              \   # 每请求仅 1 个新 token
-  --prefix-repetition-num-prefixes 1           \   # 1 个前缀 → 所有请求共享
+  --prefix-repetition-num-prefixes $gsp_groups  \   # 共享前缀组数（-g 指定，默认 1）
   --prefix-repetition-output-len $output_len    \   # 512 / 1024（按前缀组配对）
-  --num-prompts $num_prompts --max-concurrency $concurrency \   # num_prompts = 10 × 并发数
+  --num-prompts $num_prompts --max-concurrency $concurrency \   # 总请求数 = 每组条数 × 组数
   --trust-remote-code --temperature 0.7 --seed 123 \
   --metric_percentiles 90,95,99 --ready-check-timeout-sec 30
 ```
@@ -1620,6 +1626,8 @@ vllm bench serve \
 
 > **关于 num_prompts = 10 × 并发数**：bench 工具自带 warmup 机制（启动时先发送 1 个请求
 > 预热前缀缓存），主 benchmark 的所有请求均可命中缓存，不存在首请求 prefill 污染问题。
+> 默认 1 组共享前缀；`-g` 指定 G > 1 组时，每组条数 = ceil(10×并发/G)、总请求数 = 每组条数 × G，
+> 每组首请求为 prefill 冷启动（组内其余请求命中），多组更接近多租户共享场景。
 > 设为 10 倍并发数是为了增加统计样本、让服务端经历"满并发 slot → 请求完成 → 新请求补入"
 > 的动态过程，更接近稳态负载。若需流式 SSE 精确测量 TTFT/TPOT，可使用下方 HTTP 脚本。
 
@@ -1793,12 +1801,12 @@ HBM 带宽 / NCCL 通信），构建 roofline 上界，计算 MFU 达成率。
 
 ```
 阶段 1 — 预热（不计量）：
-  用 concurrency=1 发送 1 个请求，将共享前缀填入缓存
+  用 concurrency=1 串行发送 G 条请求（每组 1 条，G = -g 组数，默认 1），将各组共享前缀填入缓存
   （output_len=1，快速完成）
 
 阶段 2 — 测试（计量）：
   用目标并发发送 N_total = 5 × 并发数 个请求
-  所有请求共享同一前缀（相同 seed + gsp-num-groups=1）→ 前缀命中
+  每组内请求共享该组前缀（相同 seed + 组数）→ 前缀命中
   每个请求有不同的后缀 → 后缀未命中
   每个请求 prefill 唯一后缀部分（= 输入长度 × (1-命中率)）
 ```
@@ -1807,17 +1815,17 @@ HBM 带宽 / NCCL 通信），构建 roofline 上界，计算 MFU 达成率。
 
 | 框架 | 数据集 | 关键参数 |
 |---|---|---|
-| **SGLang** | `generated-shared-prefix` (GSP) | `--gsp-num-groups 1` `--gsp-prompts-per-group N_total` `--gsp-system-prompt-len PL` `--gsp-question-len QL` `--gsp-output-len 512` `--cache-report` |
-| **vLLM** | `prefix_repetition` | `--prefix-repetition-num-prefixes 1` `--prefix-repetition-prefix-len PL` `--prefix-repetition-suffix-len QL` `--prefix-repetition-output-len 512` |
+| **SGLang** | `generated-shared-prefix` (GSP) | `--gsp-num-groups $G（-g 指定，默认 1）` `--gsp-prompts-per-group $N_per_group` `--gsp-system-prompt-len PL` `--gsp-question-len QL` `--gsp-output-len 512` `--cache-report` |
+| **vLLM** | `prefix_repetition` | `--prefix-repetition-num-prefixes $G（-g 指定，默认 1）` `--prefix-repetition-prefix-len PL` `--prefix-repetition-suffix-len QL` `--prefix-repetition-output-len 512` |
 
 其中：
 - `PL` = 共享前缀长度 = 输入长度 × 命中率 / 100
 - `QL` = 唯一后缀长度 = 输入长度 - 共享前缀长度
-- SGLang GSP：`gsp-num-groups 1` 生成 1 个共享前缀，`gsp-prompts-per-group N_total` 生成 N_total 个不同 question
-- vLLM prefix_repetition：`num-prefixes 1` 生成 1 个共享前缀，每个请求的 suffix 随机生成（各不相同）
+- SGLang GSP：`gsp-num-groups G`（`-g` 指定，默认 1）生成 G 个共享前缀，`gsp-prompts-per-group N_per_group` 每组生成 N_per_group 个不同 question
+- vLLM prefix_repetition：`num-prefixes G`（`-g` 指定，默认 1）生成 G 个共享前缀，每个请求的 suffix 随机生成（各不相同）
 
 关键点：
-- 预热和测试用**相同的 `--seed` 和 `--gsp-num-groups 1`**，确保共享前缀相同
+- 预热和测试用**相同的 `--seed` 和组数（`--gsp-num-groups/-g`，默认 1）**，确保各组共享前缀相同
 - 预热用 `--max-concurrency 1`，测试用目标并发
 - **不加 `--flush-cache`**，确保缓存跨阶段保留
 - SGLang 从 `/metrics` 提取 HiCache L1/L2/L3 三层命中率（`--cache-report` 仅覆盖 L1/radix，可对照验证）
@@ -1855,8 +1863,9 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 | **缓存命中率** | `90`（默认） | 可通过 `-R` 指定 1~99，前缀级命中 |
 | **共享前缀长度** | `输入长度 × 命中率/100` | 90% → 58982 / 117964 / 235929（对应 3 组输入） |
 | **唯一后缀长度** | `输入长度 - 共享前缀长度` | 90% → 6554 / 13108 / 26215（对应 3 组输入） |
-| **N_total** | `5 × concurrency` | 测试阶段总请求数（5倍并发） |
-| **预热请求数** | `1` | 阶段 1 预热：1 个请求填入共享前缀（不计量，结果表自动跳过预热日志） |
+| **N_total** | `5 × concurrency`（按组数对齐） | 测试阶段总请求数 = 每组条数 × 组数，每组条数 = ceil(5×并发/组数) |
+| **预热请求数** | `= 组数 G`（默认 1） | 阶段 1 预热：每组 1 条请求填入该组共享前缀（不计量，结果表自动跳过预热日志） |
+| **共享前缀组数** | `1`（`-g` 可配） | 组内请求共享该组前缀，组间前缀不同 |
 | **并发数** | `1, 8, 32, 64, 128` | max-concurrency（仅阶段 2） |
 | **Seed** | `123` | 可复现（预热和测试必须相同） |
 
@@ -1887,6 +1896,9 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 
 # 默认后台执行，加 -f 前台
 ./cache_bench.sh -F sglang -f -u http://... -m /path -n name -t H100 -T zhangsan -P agg -R 95
+
+# 4 组共享前缀（多前缀场景）
+./cache_bench.sh -F sglang -f -u http://... -m /path -n name -t H100 -T zhangsan -P agg -g 4
 ```
 
 **参数说明**：
@@ -1903,6 +1915,7 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 | `--report-dir` | `-r` | | `./{framework}_cache_reports` | 报告输出目录 |
 | `--concurrency` | `-c` | | `1,8,32,64,128` | 并发数列表 |
 | `--io-combinations` | `-i` | | `65536 512,131072 1024,262144 1024` | IO 组合（逗号分隔，每组 `"输入 输出"`；共享前缀/唯一后缀按各组输入长度计算） |
+| `--gsp-num-groups` | `-g` | | `1` | 共享前缀组数（组内请求共享该组前缀，组间不同；预热每组 1 条，测试每组条数 = ceil(5×并发数/组数)） |
 | `--cache-hit-rate` | `-R` | | `90` | 缓存命中率百分比（1~99），前缀级命中 |
 | `--sleep` | `-s` | | `60` | 每组测试间隔（秒） |
 | `--describe` | `-d` | | — | 模型描述信息（可选，填入报告末尾单独章节） |
@@ -1919,12 +1932,12 @@ python -m sglang.benchmark.serving \
   --model "$MODEL_PATH" \
   --served-model-name "$SERVED_MODEL_NAME" \
   --dataset-name generated-shared-prefix \
-  --gsp-num-groups 1                        \   # 只有1个共享前缀
-  --gsp-prompts-per-group 1                 \   # 1个请求预热
+  --gsp-num-groups $gsp_groups              \   # 共享前缀组数（-g 指定，默认 1）
+  --gsp-prompts-per-group 1                 \   # 每组 1 条请求预热
   --gsp-system-prompt-len $prefix_len       \   # 共享前缀长度（命中部分）
   --gsp-question-len $suffix_len            \   # 唯一后缀长度（未命中部分）
   --gsp-output-len 1                        \   # output=1 快速完成
-  --num-prompts 1 --max-concurrency 1       \   # 串行1个请求
+  --num-prompts $gsp_groups --max-concurrency 1 \   # 串行 G 条（每组 1 条）
   --seed 123                                    # 与阶段2相同 seed
 
 # 阶段 2：测试（目标并发，计量）
@@ -1934,8 +1947,8 @@ python -m sglang.benchmark.serving \
   --model "$MODEL_PATH" \
   --served-model-name "$SERVED_MODEL_NAME" \
   --dataset-name generated-shared-prefix \
-  --gsp-num-groups 1                        \   # 同一共享前缀
-  --gsp-prompts-per-group $N_total          \   # N_total 个不同 question
+  --gsp-num-groups $gsp_groups              \   # 与阶段 1 相同组数
+  --gsp-prompts-per-group $N_per_group      \   # 每组 N_per_group 个不同 question
   --gsp-system-prompt-len $prefix_len       \   # 共享前缀（命中）
   --gsp-question-len $suffix_len            \   # 唯一后缀（未命中）
   --gsp-output-len $output_len              \   # 512 / 1024（按 IO 组合）
@@ -1955,9 +1968,9 @@ vllm bench serve \
   --dataset-name prefix_repetition \
   --prefix-repetition-prefix-len $prefix_len   \   # 共享前缀长度（命中部分）
   --prefix-repetition-suffix-len $suffix_len   \   # 唯一后缀长度（未命中部分）
-  --prefix-repetition-num-prefixes 1          \   # 只有1个共享前缀
+  --prefix-repetition-num-prefixes $gsp_groups \   # 共享前缀组数（-g 指定，默认 1）
   --prefix-repetition-output-len 1             \   # output=1 快速完成
-  --num-prompts 1 --max-concurrency 1          \   # 串行1个请求
+  --num-prompts $gsp_groups --max-concurrency 1 \   # 串行 G 条（每组 1 条）
   --trust-remote-code --temperature 0.7 --seed 123 \
   --metric_percentiles 90,95,99 --ready-check-timeout-sec 30
 
@@ -1970,7 +1983,7 @@ vllm bench serve \
   --dataset-name prefix_repetition \
   --prefix-repetition-prefix-len $prefix_len   \   # 同一共享前缀（命中）
   --prefix-repetition-suffix-len $suffix_len    \   # 每请求随机后缀（未命中）
-  --prefix-repetition-num-prefixes 1           \   # 只有1个共享前缀
+  --prefix-repetition-num-prefixes $gsp_groups  \   # 与阶段 1 相同组数
   --prefix-repetition-output-len $output_len    \   # 512 / 1024（按 IO 组合）
   --num-prompts $N_total --max-concurrency $concurrency \
   --trust-remote-code --temperature 0.7 --seed 123 \  # 相同 seed → 同一前缀 → 命中
@@ -2041,7 +2054,7 @@ general-benchmark-test/
 | **第1章 Benchmark** | `--disable-radix-cache` | `--no-enable-prefix-caching` | **关** | `random-ids` / `random` | = 并发数 |
 | **第2章 纯 Prefill** | `--disable-radix-cache` | `--no-enable-prefix-caching` | **关** | `random-ids` / `random` | = 5×并发数 |
 | **第2章 纯 Decode** | 默认（不加 `--disable-radix-cache`） | 默认（不加 `--no-enable-prefix-caching`） | **开** | `generated-shared-prefix` / `prefix_repetition` | = 10×并发数 |
-| **第3章 缓存命中率** | 默认（不加 `--disable-radix-cache`） | 默认（不加 `--no-enable-prefix-caching`） | **开** | `generated-shared-prefix` / `prefix_repetition` | N_total = 5×并发数（另预热 1 请求，不计量） |
+| **第3章 缓存命中率** | 默认（不加 `--disable-radix-cache`） | 默认（不加 `--no-enable-prefix-caching`） | **开** | `generated-shared-prefix` / `prefix_repetition` | N_total = 5×并发数（另预热 = 组数条请求，不计量；组数 `-g` 默认 1） |
 
 ### 快速参考：容错与超时
 

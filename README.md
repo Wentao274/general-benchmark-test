@@ -269,9 +269,14 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
   -n glm-5.2-fp8 -t H100 \
   -p 8192,65536 -o 512 -c 1,16,128 \
   -T zhangsan -P agg
+
+# 4 组共享前缀（组内共享、组间不同）
+./_scripts/decode_bench.sh -F sglang \
+  -u http://127.0.0.1:8080 -m /data1/GLM-5.2-Channel-FP8-w8a8 \
+  -n glm-5.2-fp8 -t H100 -p 8192 -c 1,8 -g 4 -T zhangsan -P agg
 ```
 
-> **测试数据集**：SGLang `generated-shared-prefix`（GSP）/ vLLM `prefix_repetition`——合成共享前缀数据集：同组所有请求共享完全相同的前缀（长度 = `--prefix-lens`），前缀之外每请求仅 1 个新 token；首个请求填充前缀缓存后，其余请求 prefill≈0。
+> **测试数据集**：SGLang `generated-shared-prefix`（GSP）/ vLLM `prefix_repetition`——合成共享前缀数据集：同组所有请求共享完全相同的前缀（长度 = `--prefix-lens`），前缀之外每请求仅 1 个新 token；首个请求填充前缀缓存后，其余请求 prefill≈0。组数由 `-g` 控制（默认 1）。
 
 ### 参数说明
 
@@ -284,6 +289,7 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 | `--prefix-lens` | `-p` | | `8192,32768,65536,131072,262144` | 前缀长度列表 |
 | `--output-lens` | `-o` | | —（按前缀组配对） | 输出长度列表；缺省时 ≤64K 前缀 → 512、128K~256K 前缀 → 1024，显式指定则前缀 × 输出全交叉 |
 | `--concurrency` | `-c` | | `1,8,32,64,128` | 并发数列表（num_prompts = 10×并发数） |
+| `--gsp-num-groups` | `-g` | | `1` | 共享前缀组数（组内请求共享同一前缀，组间不同；每组条数 = ceil(10×并发数/组数)，总请求数 = 每组条数 × 组数） |
 | `--chip-type` | `-t` | ✅ | — | 芯片类型（CSV 列名后缀） |
 | `--tester` | `-T` | ✅ | — | 测试人员（用于报告目录层级和报告命名） |
 | `--pd` | `-P` | ✅ | — | PD部署模式: `agg`(非PD分离) 或 `disagg`(PD分离) |
@@ -305,7 +311,7 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 - **TPOT** = `Mean/Median/P90/P95/P99 TPOT (ms)`
 - **TTFT** = `Mean/Median/P90/P95/P99 TTFT (ms)`（应很小，若很大说明缓存未生效）
 
-> num_prompts = 10 × 并发数，增加统计样本数，提高吞吐和延迟测量稳定性（bench 工具自带 warmup 预热前缀缓存）。
+> num_prompts = 10 × 并发数（`-g` 指定组数 G 时：每组条数 = ceil(10×并发/G)，总请求数 = 每组条数 × G），增加统计样本数，提高吞吐和延迟测量稳定性（bench 工具自带 warmup 预热前缀缓存）。
 
 ---
 
@@ -320,11 +326,11 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 缓存命中率 = 共享前缀长度 / 输入总长度 × 100%
 
 阶段 1 — 预热（不计量）：
-  用 concurrency=1 发送 1 个请求，将共享前缀填入缓存
+  用 concurrency=1 串行发送 G 条请求（每组 1 条，G = -g 组数，默认 1），将各组共享前缀填入缓存
 
 阶段 2 — 测试（计量）：
   用目标并发发送 N_total = 5×并发 个请求
-  所有请求共享同一前缀（命中）→ prefill ≈ 0
+  每组内请求共享该组前缀（命中）→ prefill ≈ 0
   每个请求有不同的后缀（未命中）→ prefill 唯一后缀部分
 ```
 
@@ -367,7 +373,7 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
   -R 95
 ```
 
-> **测试数据集**：与纯 Decode 同族——SGLang `generated-shared-prefix`（GSP）/ vLLM `prefix_repetition`：共享前缀长度 = 输入长度 × 命中率（`-R`），每请求唯一后缀 = 输入长度 − 前缀（随机生成、各不相同，为未命中部分）。
+> **测试数据集**：与纯 Decode 同族——SGLang `generated-shared-prefix`（GSP）/ vLLM `prefix_repetition`：共享前缀长度 = 输入长度 × 命中率（`-R`），每请求唯一后缀 = 输入长度 − 前缀（随机生成、各不相同，为未命中部分）。组数由 `-g` 控制（默认 1；预热每组 1 条填前缀）。
 
 ### 参数说明
 
@@ -381,7 +387,8 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 | `--tester` | `-T` | ✅ | — | 测试人员（用于报告目录层级和报告命名） |
 | `--pd` | `-P` | ✅ | — | PD部署模式: `agg`(非PD分离) 或 `disagg`(PD分离) |
 | `--report-dir` | `-r` | | `./{framework}_cache_reports` | 报告输出目录 |
-| `--concurrency` | `-c` | | `1,8,32,64,128` | 并发数列表（测试请求数 N_total = 5×并发数；另有预热 1 请求，不计量） |
+| `--concurrency` | `-c` | | `1,8,32,64,128` | 并发数列表（测试请求数 N_total = 5×并发数；另有预热 = 组数条请求，不计量） |
+| `--gsp-num-groups` | `-g` | | `1` | 共享前缀组数（组内请求共享该组前缀，组间不同；预热每组 1 条，测试每组条数 = ceil(5×并发数/组数)） |
 | `--io-combinations` | `-i` | | `65536 512,131072 1024,262144 1024` | IO 组合（逗号分隔，每组 `"输入 输出"`；共享前缀/唯一后缀按各组输入长度计算） |
 | `--cache-hit-rate` | `-R` | | `90` | 缓存命中率百分比（1~99），前缀级命中 |
 | `--sleep` | `-s` | | `60` | 每组测试间隔（秒） |
@@ -486,7 +493,7 @@ python3 _scripts/csv_to_md.py \
 | **output_len** | 512（≤64K 组）/ 1024（128K~1M 组） | 1（固定） | 512（≤64K 组）/ 1024（128K~256K 组） | 512（64K 组）/ 1024（128K~256K 组） |
 | **前缀缓存** | **关** | **关** | **开** | **开** |
 | **数据集** | `random-ids`/`random`（随机，无共享前缀） | `random-ids`/`random`（随机，无共享前缀） | `generated-shared-prefix`/`prefix_repetition`（共享前缀） | `generated-shared-prefix`/`prefix_repetition`（共享前缀） |
-| **num_prompts** | = 并发数 | = 5×并发数 | = 10×并发数 | N_total = 5×并发数（另预热 1 请求，不计量） |
+| **num_prompts** | = 并发数 | = 5×并发数 | = 10×并发数 | N_total = 5×并发数（另预热 = 组数条请求，不计量；组数 `-g` 默认 1） |
 | **核心指标** | 输入/输出/总吞吐量、TTFT、TPOT | prefill 吞吐量、TTFT | decode 吞吐量、TPOT | 输入/输出/总吞吐量、TTFT、TPOT |
 | **命中率列** | 实测（关缓存时应为 0%） | 实测（关缓存时应为 ≈0%，无数据记 N/A） | 实测（缓存命中应为 ≈100%，无数据记 N/A） | 实测（SGLang `/metrics` 三层 L1/L2/L3 / vLLM `/metrics` 两层 L1/L3），vLLM L1 无数据回退 `-R`，SGLang 各层无数据显示 N/A |
 | **超时保护** | `--timeout`（默认 3600s） | 同左 | 同左 | 同左 |

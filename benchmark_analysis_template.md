@@ -98,8 +98,8 @@ python -m sglang.benchmark.serving \
   --model "$MODEL_PATH" \
   --served-model-name "$SERVED_MODEL_NAME" \
   --dataset-name generated-shared-prefix \
-  --gsp-num-groups 1 \
-  --gsp-prompts-per-group $NUM_PROMPTS \
+  --gsp-num-groups $NUM_GROUPS \
+  --gsp-prompts-per-group $PER_GROUP \
   --gsp-system-prompt-len $PREFIX_LEN \
   --gsp-question-len 1 \
   --gsp-output-len $OUTPUT_LEN \
@@ -108,19 +108,19 @@ python -m sglang.benchmark.serving \
   --seed 123
 
 # SGLang 指定缓存命中率命令（第3章，前缀级命中，两阶段：预热+测试）
-# 阶段1：预热（串行，填共享前缀入缓存，不计量）
+# 阶段1：预热（串行，每组 1 条请求填该组共享前缀入缓存，共 $NUM_GROUPS 条，不计量）
 python -m sglang.benchmark.serving \
   --backend sglang-oai-chat \
   --base-url "$BASE_URL" \
   --model "$MODEL_PATH" \
   --served-model-name "$SERVED_MODEL_NAME" \
   --dataset-name generated-shared-prefix \
-  --gsp-num-groups 1 \
+  --gsp-num-groups $NUM_GROUPS \
   --gsp-prompts-per-group 1 \
   --gsp-system-prompt-len $PREFIX_LEN \
   --gsp-question-len $SUFFIX_LEN \
   --gsp-output-len 1 \
-  --num-prompts 1 \
+  --num-prompts $NUM_GROUPS \
   --max-concurrency 1 \
   --seed 123
 # 阶段2：测试（目标并发，计量）
@@ -130,8 +130,8 @@ python -m sglang.benchmark.serving \
   --model "$MODEL_PATH" \
   --served-model-name "$SERVED_MODEL_NAME" \
   --dataset-name generated-shared-prefix \
-  --gsp-num-groups 1 \
-  --gsp-prompts-per-group $N_TOTAL \
+  --gsp-num-groups $NUM_GROUPS \
+  --gsp-prompts-per-group $PER_GROUP \
   --gsp-system-prompt-len $PREFIX_LEN \
   --gsp-question-len $SUFFIX_LEN \
   --gsp-output-len $OUTPUT_LEN \
@@ -170,7 +170,7 @@ vllm bench serve \
   --dataset-name prefix_repetition \
   --prefix-repetition-prefix-len $PREFIX_LEN \
   --prefix-repetition-suffix-len 1 \
-  --prefix-repetition-num-prefixes 1 \
+  --prefix-repetition-num-prefixes $NUM_GROUPS \
   --prefix-repetition-output-len $OUTPUT_LEN \
   --num-prompts $NUM_PROMPTS \
   --max-concurrency $CONCURRENCY \
@@ -181,7 +181,7 @@ vllm bench serve \
   --ready-check-timeout-sec 30
 
 # vLLM 指定缓存命中率命令（第3章，前缀级命中，两阶段：预热+测试）
-# 阶段1：预热（串行，填共享前缀入缓存，不计量）
+# 阶段1：预热（串行，每组 1 条请求填该组共享前缀入缓存，共 $NUM_GROUPS 条，不计量）
 vllm bench serve \
   --backend openai-chat \
   --endpoint /v1/chat/completions \
@@ -191,9 +191,9 @@ vllm bench serve \
   --dataset-name prefix_repetition \
   --prefix-repetition-prefix-len $PREFIX_LEN \
   --prefix-repetition-suffix-len $SUFFIX_LEN \
-  --prefix-repetition-num-prefixes 1 \
+  --prefix-repetition-num-prefixes $NUM_GROUPS \
   --prefix-repetition-output-len 1 \
-  --num-prompts 1 \
+  --num-prompts $NUM_GROUPS \
   --max-concurrency 1 \
   --trust-remote-code \
   --temperature 0.7 \
@@ -210,7 +210,7 @@ vllm bench serve \
   --dataset-name prefix_repetition \
   --prefix-repetition-prefix-len $PREFIX_LEN \
   --prefix-repetition-suffix-len $SUFFIX_LEN \
-  --prefix-repetition-num-prefixes 1 \
+  --prefix-repetition-num-prefixes $NUM_GROUPS \
   --prefix-repetition-output-len $OUTPUT_LEN \
   --num-prompts $N_TOTAL \
   --max-concurrency $CONCURRENCY \

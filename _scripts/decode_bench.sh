@@ -9,12 +9,12 @@ set -euo pipefail
 #
 # 数据集选择（显式保证共享前缀 → 缓存命中）：
 #   SGLang: generated-shared-prefix (GSP)
-#     --gsp-num-groups 1                    所有请求共享同一前缀
+#     --gsp-num-groups $GSP_NUM_GROUPS      共享前缀组数（-g 可配，默认 1；组内共享，组间不同）
 #     --gsp-system-prompt-len $prefix_len   共享前缀长度
 #     --gsp-question-len 1                  每请求 1 个新 token
 #     --gsp-output-len $output_len           输出长度
 #   vLLM:   prefix_repetition
-#     --prefix-repetition-num-prefixes 1    所有请求共享同一前缀
+#     --prefix-repetition-num-prefixes $GSP_NUM_GROUPS   共享前缀组数（同上）
 #     --prefix-repetition-prefix-len $prefix_len  共享前缀长度
 #     --prefix-repetition-suffix-len 1      每请求 1 个新 token
 #     --prefix-repetition-output-len $output_len   输出长度
@@ -45,8 +45,11 @@ TIMEOUT=3600
 DEFAULT_PREFIX_LENS="8192,32768,65536,131072,262144"
 # decode 输出长度：未指定 -o 时按前缀组配对（≤64K → 512，128K~256K → 1024）
 DEFAULT_OUTPUT_LENS=""
+OUTPUT_LENS_ARG=""
 # 并发数列表
 DEFAULT_CONCURRENCY="1,8,32,64,128"
+# 共享前缀组数（每组内请求共享同一前缀，组间前缀不同）
+GSP_NUM_GROUPS=1
 
 # --- 参数解析 ---
 usage() {
@@ -72,6 +75,8 @@ Usage: $0 -F <sglang|vllm> [OPTIONS]
   -p, --prefix-lens LIST        前缀长度列表(逗号分隔) (default: $DEFAULT_PREFIX_LENS)
   -o, --output-lens LIST        输出长度列表(逗号分隔;缺省按前缀组配对: <=64K->512, 128K~256K->1024)
   -c, --concurrency LIST        并发数列表(逗号分隔) (default: $DEFAULT_CONCURRENCY)
+  -g, --gsp-num-groups N        共享前缀组数(组内请求共享同一前缀,组间前缀不同) (default: 1)
+                                  请求总数 = 每组条数 × N，每组条数 = ceil(10×并发/N)
   -s, --sleep SECONDS           每次测试间隔秒数    (default: $SLEEP_TIME)
   -d, --describe TEXT           模型描述信息(可选,填入报告末尾)
   -f, --foreground              前台执行(默认后台)
@@ -95,6 +100,7 @@ while [[ $# -gt 0 ]]; do
     -p|--prefix-lens)         PREFIX_LENS_ARG="$2";      shift 2 ;;
     -o|--output-lens)         OUTPUT_LENS_ARG="$2";      shift 2 ;;
     -c|--concurrency)         CONCURRENCY_ARG="$2";      shift 2 ;;
+    -g|--gsp-num-groups)      GSP_NUM_GROUPS="$2";       shift 2 ;;
     -s|--sleep)               SLEEP_TIME="$2";           shift 2 ;;
     -d|--describe)            DESCRIBE="$2";             shift 2 ;;
     -f|--foreground)          BACKGROUND=false;          shift   ;;
@@ -159,6 +165,12 @@ case "$PD" in
     ;;
 esac
 
+# --- 校验共享前缀组数 ---
+if ! [[ "$GSP_NUM_GROUPS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "ERROR: --gsp-num-groups 必须为 >=1 的整数，当前值: '$GSP_NUM_GROUPS'" >&2
+  exit 1
+fi
+
 # --- 前置校验：serve_command.sh ---
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
@@ -198,6 +210,7 @@ if [[ "$BACKGROUND" == "true" ]]; then
     --prefix-lens "${PREFIX_LENS_ARG:-$DEFAULT_PREFIX_LENS}" \
     --output-lens "${OUTPUT_LENS_ARG:-$DEFAULT_OUTPUT_LENS}" \
     --concurrency "${CONCURRENCY_ARG:-$DEFAULT_CONCURRENCY}" \
+    --gsp-num-groups "$GSP_NUM_GROUPS" \
     --sleep "$SLEEP_TIME" \
     --chip-type "$CHIP_TYPE" \
     --tester "$TESTER" \
@@ -244,6 +257,7 @@ else
   echo "=== Output Lens:   512 (prefix<=64K) / 1024 (prefix>64K) [paired per prefix]"
 fi
 echo "=== Concurrency:  ${concurrency_list[*]}"
+echo "=== GSP Groups:   $GSP_NUM_GROUPS (per group shares one prefix)"
 if [[ "$FRAMEWORK" == "sglang" ]]; then
   echo "=== Dataset:      generated-shared-prefix (GSP)"
 else
@@ -474,11 +488,14 @@ for prefix_len in "${prefix_lens[@]}"; do
   for output_len in "${eff_output_lens[@]}"; do
     for concurrency in "${concurrency_list[@]}"; do
       # num_prompts = 10 × 并发数，增加统计样本数，提高测量稳定性
-      num_prompts=$((concurrency * 10))
+      # GSP_NUM_GROUPS > 1 时按组均摊（向上取整），实际总数 = 每组条数 × 组数
+      base_prompts=$((concurrency * 10))
+      per_group_prompts=$(( (base_prompts + GSP_NUM_GROUPS - 1) / GSP_NUM_GROUPS ))
+      num_prompts=$((per_group_prompts * GSP_NUM_GROUPS))
       log_file="${RUN_DIR}/decode_bs-${concurrency}_prefix-${prefix_len}-output-${output_len}.log"
       jsonl_file="${RUN_DIR}/decode_bs-${concurrency}_prefix-${prefix_len}-output-${output_len}.jsonl"
       echo ""
-      echo ">>> Decode: Prefix=$prefix_len, Output=$output_len, Concurrency=$concurrency, NumPrompts=$num_prompts"
+      echo ">>> Decode: Prefix=$prefix_len, Output=$output_len, Concurrency=$concurrency, Groups=$GSP_NUM_GROUPS, NumPrompts=$num_prompts"
       echo ">>> Log file: $log_file"
 
       # --- 测试前抓取服务端前缀缓存计数器（验证缓存命中，预期 ~100%） ---
@@ -491,15 +508,15 @@ for prefix_len in "${prefix_lens[@]}"; do
       set +e
       if [[ "$FRAMEWORK" == "sglang" ]]; then
         # SGLang: generated-shared-prefix (GSP)
-        # 所有请求共享同一前缀，保证缓存命中
+        # 每组内请求共享同一前缀（共 $GSP_NUM_GROUPS 组），保证组内缓存命中
     timeout "$TIMEOUT" "$PYTHON_CMD" -m sglang.benchmark.serving \
-          --backend sglang-oai-chat \
-          --base-url "$BASE_URL" \
-          --model "$MODEL_PATH" \
-          --served-model-name "$SERVED_MODEL_NAME" \
-          --dataset-name generated-shared-prefix \
-          --gsp-num-groups 1 \
-          --gsp-prompts-per-group "$num_prompts" \
+           --backend sglang-oai-chat \
+           --base-url "$BASE_URL" \
+           --model "$MODEL_PATH" \
+           --served-model-name "$SERVED_MODEL_NAME" \
+           --dataset-name generated-shared-prefix \
+           --gsp-num-groups "$GSP_NUM_GROUPS" \
+           --gsp-prompts-per-group "$per_group_prompts" \
           --gsp-system-prompt-len "$prefix_len" \
           --gsp-question-len 1 \
           --gsp-output-len "$output_len" \
@@ -510,7 +527,7 @@ for prefix_len in "${prefix_lens[@]}"; do
           > "$log_file" 2>&1
       elif [[ "$FRAMEWORK" == "vllm" ]]; then
         # vLLM: prefix_repetition
-        # num-prefixes=1 → 所有请求共享同一前缀
+        # num-prefixes=$GSP_NUM_GROUPS → 共 $GSP_NUM_GROUPS 个共享前缀，请求均匀分摊
         timeout "$TIMEOUT" vllm bench serve \
           --backend openai-chat \
           --endpoint /v1/chat/completions \
@@ -520,7 +537,7 @@ for prefix_len in "${prefix_lens[@]}"; do
           --dataset-name prefix_repetition \
           --prefix-repetition-prefix-len "$prefix_len" \
           --prefix-repetition-suffix-len 1 \
-          --prefix-repetition-num-prefixes 1 \
+          --prefix-repetition-num-prefixes "$GSP_NUM_GROUPS" \
           --prefix-repetition-output-len "$output_len" \
           --num-prompts "$num_prompts" \
           --max-concurrency "$concurrency" \
@@ -587,18 +604,20 @@ if [[ "$FRAMEWORK" == "sglang" ]]; then
   BENCH_COMMANDS="# 前缀长度列表: ${PREFIX_LENS_STR}
 ${OUT_HDR}
 # 并发数列表: ${CONCURRENCY_STR}
+# 共享前缀组数: ${GSP_NUM_GROUPS}（组内请求共享同一前缀，组间不同；每组条数向上取整）
 for PREFIX_LEN in ${PREFIX_LIST}; do
 ${OUT_OPEN}
     for CONCURRENCY in ${CONC_LIST}; do
-      NUM_PROMPTS=\$((CONCURRENCY * 10))
+      PER_GROUP=\$(( (CONCURRENCY * 10 + ${GSP_NUM_GROUPS} - 1) / ${GSP_NUM_GROUPS} ))
+      NUM_PROMPTS=\$((PER_GROUP * ${GSP_NUM_GROUPS}))
       $PYTHON_CMD -m sglang.benchmark.serving \\
         --backend sglang-oai-chat \\
         --base-url \"\$BASE_URL\" \\
         --model \"\$MODEL_PATH\" \\
         --served-model-name \"\$SERVED_MODEL_NAME\" \\
         --dataset-name generated-shared-prefix \\
-        --gsp-num-groups 1 \\
-        --gsp-prompts-per-group \$NUM_PROMPTS \\
+        --gsp-num-groups ${GSP_NUM_GROUPS} \\
+        --gsp-prompts-per-group \$PER_GROUP \\
         --gsp-system-prompt-len \$PREFIX_LEN \\
         --gsp-question-len 1 \\
         --gsp-output-len \$OUTPUT_LEN \\
@@ -612,10 +631,12 @@ elif [[ "$FRAMEWORK" == "vllm" ]]; then
   BENCH_COMMANDS="# 前缀长度列表: ${PREFIX_LENS_STR}
 ${OUT_HDR}
 # 并发数列表: ${CONCURRENCY_STR}
+# 共享前缀组数: ${GSP_NUM_GROUPS}（组内请求共享同一前缀，组间不同）
 for PREFIX_LEN in ${PREFIX_LIST}; do
 ${OUT_OPEN}
     for CONCURRENCY in ${CONC_LIST}; do
-      NUM_PROMPTS=\$((CONCURRENCY * 10))
+      PER_GROUP=\$(( (CONCURRENCY * 10 + ${GSP_NUM_GROUPS} - 1) / ${GSP_NUM_GROUPS} ))
+      NUM_PROMPTS=\$((PER_GROUP * ${GSP_NUM_GROUPS}))
       vllm bench serve \\
         --backend openai-chat \\
         --endpoint /v1/chat/completions \\
@@ -625,7 +646,7 @@ ${OUT_OPEN}
         --dataset-name prefix_repetition \\
         --prefix-repetition-prefix-len \$PREFIX_LEN \\
         --prefix-repetition-suffix-len 1 \\
-        --prefix-repetition-num-prefixes 1 \\
+        --prefix-repetition-num-prefixes ${GSP_NUM_GROUPS} \\
         --prefix-repetition-output-len \$OUTPUT_LEN \\
         --num-prompts \$NUM_PROMPTS \\
         --max-concurrency \$CONCURRENCY \\
