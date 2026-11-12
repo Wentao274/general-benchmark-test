@@ -32,6 +32,7 @@ BASE_URL=""
 MODEL_PATH=""
 SERVED_MODEL_NAME=""
 SEED=123
+CONCURRENCY_MULTIPLIER=10
 SLEEP_TIME=60
 REPORT_DIR=""
 CHIP_TYPE=""
@@ -76,7 +77,10 @@ Usage: $0 -F <sglang|vllm> [OPTIONS]
   -o, --output-lens LIST        输出长度列表(逗号分隔;缺省按前缀组配对: <=64K->512, 128K~256K->1024)
   -c, --concurrency LIST        并发数列表(逗号分隔) (default: $DEFAULT_CONCURRENCY)
   -g, --gsp-num-groups N        共享前缀组数(组内请求共享同一前缀,组间前缀不同) (default: 1)
-                                  请求总数 = 每组条数 × N，每组条数 = ceil(10×并发/N)
+                                  请求总数 = 每组条数 × N，每组条数 = ceil(并发倍数×并发/N)
+  --seed N                      随机数据集种子    (default: $SEED)
+  --concurrency-multiplier N    并发倍数: 请求总数 = 每组条数 × 组数，每组条数 = ceil(N×并发/组数)
+                                  (default: $CONCURRENCY_MULTIPLIER)
   -s, --sleep SECONDS           每次测试间隔秒数    (default: $SLEEP_TIME)
   -d, --describe TEXT           模型描述信息(可选,填入报告末尾)
   -f, --foreground              前台执行(默认后台)
@@ -101,6 +105,8 @@ while [[ $# -gt 0 ]]; do
     -o|--output-lens)         OUTPUT_LENS_ARG="$2";      shift 2 ;;
     -c|--concurrency)         CONCURRENCY_ARG="$2";      shift 2 ;;
     -g|--gsp-num-groups)      GSP_NUM_GROUPS="$2";       shift 2 ;;
+    --seed)                   SEED="$2";                shift 2 ;;
+    --concurrency-multiplier) CONCURRENCY_MULTIPLIER="$2"; shift 2 ;;
     -s|--sleep)               SLEEP_TIME="$2";           shift 2 ;;
     -d|--describe)            DESCRIBE="$2";             shift 2 ;;
     -f|--foreground)          BACKGROUND=false;          shift   ;;
@@ -171,6 +177,16 @@ if ! [[ "$GSP_NUM_GROUPS" =~ ^[1-9][0-9]*$ ]]; then
   exit 1
 fi
 
+# --- 校验 seed 与并发倍数 ---
+if ! [[ "$SEED" =~ ^[0-9]+$ ]]; then
+  echo "ERROR: --seed 必须为非负整数，当前值: '$SEED'" >&2
+  exit 1
+fi
+if ! [[ "$CONCURRENCY_MULTIPLIER" =~ ^[1-9][0-9]*$ ]]; then
+  echo "ERROR: --concurrency-multiplier 必须为 >=1 的整数，当前值: '$CONCURRENCY_MULTIPLIER'" >&2
+  exit 1
+fi
+
 # --- 前置校验：serve_command.sh ---
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
@@ -211,6 +227,8 @@ if [[ "$BACKGROUND" == "true" ]]; then
     --output-lens "${OUTPUT_LENS_ARG:-$DEFAULT_OUTPUT_LENS}" \
     --concurrency "${CONCURRENCY_ARG:-$DEFAULT_CONCURRENCY}" \
     --gsp-num-groups "$GSP_NUM_GROUPS" \
+    --seed "$SEED" \
+    --concurrency-multiplier "$CONCURRENCY_MULTIPLIER" \
     --sleep "$SLEEP_TIME" \
     --chip-type "$CHIP_TYPE" \
     --tester "$TESTER" \
@@ -258,6 +276,8 @@ else
 fi
 echo "=== Concurrency:  ${concurrency_list[*]}"
 echo "=== GSP Groups:   $GSP_NUM_GROUPS (per group shares one prefix)"
+echo "=== Seed:          $SEED"
+echo "=== Conc Multiplier: $CONCURRENCY_MULTIPLIER"
 if [[ "$FRAMEWORK" == "sglang" ]]; then
   echo "=== Dataset:      generated-shared-prefix (GSP)"
 else
@@ -487,9 +507,9 @@ for prefix_len in "${prefix_lens[@]}"; do
   fi
   for output_len in "${eff_output_lens[@]}"; do
     for concurrency in "${concurrency_list[@]}"; do
-      # num_prompts = 10 × 并发数，增加统计样本数，提高测量稳定性
+      # num_prompts = 并发倍数（默认 10）× 并发数，增加统计样本数，提高测量稳定性
       # GSP_NUM_GROUPS > 1 时按组均摊（向上取整），实际总数 = 每组条数 × 组数
-      base_prompts=$((concurrency * 10))
+      base_prompts=$((concurrency * CONCURRENCY_MULTIPLIER))
       per_group_prompts=$(( (base_prompts + GSP_NUM_GROUPS - 1) / GSP_NUM_GROUPS ))
       num_prompts=$((per_group_prompts * GSP_NUM_GROUPS))
       log_file="${RUN_DIR}/decode_bs-${concurrency}_prefix-${prefix_len}-output-${output_len}.log"
@@ -605,10 +625,11 @@ if [[ "$FRAMEWORK" == "sglang" ]]; then
 ${OUT_HDR}
 # 并发数列表: ${CONCURRENCY_STR}
 # 共享前缀组数: ${GSP_NUM_GROUPS}（组内请求共享同一前缀，组间不同；每组条数向上取整）
+# 并发倍数: ${CONCURRENCY_MULTIPLIER}（请求总数 = 每组条数 × 组数，每组条数 = ceil(并发倍数×并发/组数)）
 for PREFIX_LEN in ${PREFIX_LIST}; do
 ${OUT_OPEN}
     for CONCURRENCY in ${CONC_LIST}; do
-      PER_GROUP=\$(( (CONCURRENCY * 10 + ${GSP_NUM_GROUPS} - 1) / ${GSP_NUM_GROUPS} ))
+      PER_GROUP=\$(( (CONCURRENCY * ${CONCURRENCY_MULTIPLIER} + ${GSP_NUM_GROUPS} - 1) / ${GSP_NUM_GROUPS} ))
       NUM_PROMPTS=\$((PER_GROUP * ${GSP_NUM_GROUPS}))
       $PYTHON_CMD -m sglang.benchmark.serving \\
         --backend sglang-oai-chat \\
@@ -632,10 +653,11 @@ elif [[ "$FRAMEWORK" == "vllm" ]]; then
 ${OUT_HDR}
 # 并发数列表: ${CONCURRENCY_STR}
 # 共享前缀组数: ${GSP_NUM_GROUPS}（组内请求共享同一前缀，组间不同）
+# 并发倍数: ${CONCURRENCY_MULTIPLIER}（请求总数 = 每组条数 × 组数，每组条数 = ceil(并发倍数×并发/组数)）
 for PREFIX_LEN in ${PREFIX_LIST}; do
 ${OUT_OPEN}
     for CONCURRENCY in ${CONC_LIST}; do
-      PER_GROUP=\$(( (CONCURRENCY * 10 + ${GSP_NUM_GROUPS} - 1) / ${GSP_NUM_GROUPS} ))
+      PER_GROUP=\$(( (CONCURRENCY * ${CONCURRENCY_MULTIPLIER} + ${GSP_NUM_GROUPS} - 1) / ${GSP_NUM_GROUPS} ))
       NUM_PROMPTS=\$((PER_GROUP * ${GSP_NUM_GROUPS}))
       vllm bench serve \\
         --backend openai-chat \\

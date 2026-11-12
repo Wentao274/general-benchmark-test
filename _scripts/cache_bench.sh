@@ -44,6 +44,7 @@ BASE_URL=""
 MODEL_PATH=""
 SERVED_MODEL_NAME=""
 SEED=123
+CONCURRENCY_MULTIPLIER=5
 SLEEP_TIME=60
 REPORT_DIR=""
 CHIP_TYPE=""
@@ -86,7 +87,10 @@ Usage: $0 -F <sglang|vllm> [OPTIONS]
   -c, --concurrency LIST        并发数列表(逗号分隔) (default: $DEFAULT_CONCURRENCY)
   -i, --io-combinations LIST    IO组合(逗号分隔,每组"in out") (default: $DEFAULT_IO)
   -g, --gsp-num-groups N        共享前缀组数(组内请求共享同一前缀,组间前缀不同) (default: 1)
-                                  预热阶段每组发 1 条请求填前缀；测试请求总数 = 每组条数 × N，每组条数 = ceil(5×并发/N)
+                                  预热阶段每组发 1 条请求填前缀；测试请求总数 = 每组条数 × N，每组条数 = ceil(并发倍数×并发/N)
+  --seed N                      随机数据集种子    (default: $SEED)
+  --concurrency-multiplier N    并发倍数: 测试请求数 N_total = 并发数 × N（预热不受影响）
+                                  (default: $CONCURRENCY_MULTIPLIER)
   -R, --cache-hit-rate PCT      缓存命中率百分比     (default: $DEFAULT_CACHE_HIT_RATE)
                                   如 90 表示每个请求 90% 前缀命中、10% 后缀未命中
                                   共享前缀长度 = 输入长度 × PCT/100
@@ -114,7 +118,9 @@ while [[ $# -gt 0 ]]; do
     -c|--concurrency)         CONCURRENCY_ARG="$2";      shift 2 ;;
     -i|--io-combinations)     IO_ARG="$2";              shift 2 ;;
     -g|--gsp-num-groups)      GSP_NUM_GROUPS="$2";       shift 2 ;;
-    -R|--cache-hit-rate)      CACHE_HIT_RATE="$2";       shift 2 ;;
+    --seed)                   SEED="$2";                shift 2 ;;
+    --concurrency-multiplier) CONCURRENCY_MULTIPLIER="$2"; shift 2 ;;
+    -R|--cache-hit-rate)      CACHE_HIT_RATE="$2";      shift 2 ;;
     -s|--sleep)               SLEEP_TIME="$2";           shift 2 ;;
     -d|--describe)            DESCRIBE="$2";             shift 2 ;;
     -f|--foreground)          BACKGROUND=false;          shift   ;;
@@ -192,6 +198,16 @@ if ! [[ "$GSP_NUM_GROUPS" =~ ^[1-9][0-9]*$ ]]; then
   exit 1
 fi
 
+# --- 校验 seed 与并发倍数 ---
+if ! [[ "$SEED" =~ ^[0-9]+$ ]]; then
+  echo "ERROR: --seed 必须为非负整数，当前值: '$SEED'" >&2
+  exit 1
+fi
+if ! [[ "$CONCURRENCY_MULTIPLIER" =~ ^[1-9][0-9]*$ ]]; then
+  echo "ERROR: --concurrency-multiplier 必须为 >=1 的整数，当前值: '$CONCURRENCY_MULTIPLIER'" >&2
+  exit 1
+fi
+
 # --- 前置校验：serve_command.sh ---
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
@@ -231,6 +247,8 @@ if [[ "$BACKGROUND" == "true" ]]; then
     --io-combinations "${IO_ARG:-$DEFAULT_IO}" \
     --cache-hit-rate "$CACHE_HIT_RATE" \
     --gsp-num-groups "$GSP_NUM_GROUPS" \
+    --seed "$SEED" \
+    --concurrency-multiplier "$CONCURRENCY_MULTIPLIER" \
     --sleep "$SLEEP_TIME" \
     --chip-type "$CHIP_TYPE" \
     --tester "$TESTER" \
@@ -275,6 +293,8 @@ echo "=== Concurrency:    ${concurrency_list[*]}"
 echo "=== IO Combinations: ${IO_STR}"
 echo "=== Cache Hit Rate: ${CACHE_HIT_RATE}% (prefix-level)"
 echo "=== GSP Groups:     $GSP_NUM_GROUPS (per group shares one prefix)"
+echo "=== Seed:           $SEED"
+echo "=== Conc Multiplier: $CONCURRENCY_MULTIPLIER"
 echo "=== Chip Type:      ${CHIP_TYPE:-(未指定)}"
 echo "=== Tester:         $TESTER"
 echo "=== PD Mode:        $PD"
@@ -503,9 +523,9 @@ append_sglang_cache_report() {
 
 # --- 外层循环：遍历不同的并发值 ---
 for concurrency in "${concurrency_list[@]}"; do
-  # N_total = 测试阶段总请求数 = 5 × 并发数（增加统计样本，提高测量稳定性）
+  # N_total = 测试阶段总请求数 = 并发倍数（默认 5）× 并发数（增加统计样本，提高测量稳定性）
   # GSP_NUM_GROUPS > 1 时按组均摊（向上取整），实际总数 = 每组条数 × 组数
-  base_total=$(( concurrency * 5 ))
+  base_total=$(( concurrency * CONCURRENCY_MULTIPLIER ))
   per_group_prompts=$(( (base_total + GSP_NUM_GROUPS - 1) / GSP_NUM_GROUPS ))
   N_total=$(( per_group_prompts * GSP_NUM_GROUPS ))
 
@@ -709,12 +729,13 @@ if [[ "$FRAMEWORK" == "sglang" ]]; then
 # IO 组合: ${IO_STR}
 # 缓存命中率: ${CACHE_HIT_RATE}% (前缀级)
 # 共享前缀组数: ${GSP_NUM_GROUPS}（组内请求共享该组前缀，组间不同）
+# 并发倍数: ${CONCURRENCY_MULTIPLIER}（测试 N_total = 并发数 × 并发倍数；预热每组固定 1 条）
 # 共享前缀长度 = 输入长度 × ${CACHE_HIT_RATE} / 100（命中），其余为唯一后缀（未命中）
 # 方法: 两阶段（预热+测试）
 #   阶段1 预热: 每组 1 个请求填该组共享前缀入缓存（共 ${GSP_NUM_GROUPS} 组，不计量）
-#   阶段2 测试: N_total = 5×并发 个请求（每组条数向上取整），每个请求前缀命中+后缀未命中
+#   阶段2 测试: N_total = ${CONCURRENCY_MULTIPLIER}×并发 个请求（每组条数向上取整），每个请求前缀命中+后缀未命中
 for CONCURRENCY in ${CONC_LIST}; do
-  PER_GROUP=\$(( (CONCURRENCY * 5 + ${GSP_NUM_GROUPS} - 1) / ${GSP_NUM_GROUPS} ))
+  PER_GROUP=\$(( (CONCURRENCY * ${CONCURRENCY_MULTIPLIER} + ${GSP_NUM_GROUPS} - 1) / ${GSP_NUM_GROUPS} ))
   N_TOTAL=\$((PER_GROUP * ${GSP_NUM_GROUPS}))
   for IO in ${IO_QUOTED}; do
   INPUT_LEN=\$(echo \"\$IO\" | awk '{print \$1}')
@@ -761,12 +782,13 @@ elif [[ "$FRAMEWORK" == "vllm" ]]; then
 # IO 组合: ${IO_STR}
 # 缓存命中率: ${CACHE_HIT_RATE}% (前缀级)
 # 共享前缀组数: ${GSP_NUM_GROUPS}（组内请求共享该组前缀，组间不同）
+# 并发倍数: ${CONCURRENCY_MULTIPLIER}（测试 N_total = 并发数 × 并发倍数；预热每组固定 1 条）
 # 共享前缀长度 = 输入长度 × ${CACHE_HIT_RATE} / 100（命中），其余为唯一后缀（未命中）
 # 方法: 两阶段（预热+测试）
 #   阶段1 预热: 每组 1 个请求填该组共享前缀入缓存（共 ${GSP_NUM_GROUPS} 组，不计量）
-#   阶段2 测试: N_total = 5×并发 个请求（每组条数向上取整），每个请求前缀命中+后缀未命中
+#   阶段2 测试: N_total = ${CONCURRENCY_MULTIPLIER}×并发 个请求（每组条数向上取整），每个请求前缀命中+后缀未命中
 for CONCURRENCY in ${CONC_LIST}; do
-  PER_GROUP=\$(( (CONCURRENCY * 5 + ${GSP_NUM_GROUPS} - 1) / ${GSP_NUM_GROUPS} ))
+  PER_GROUP=\$(( (CONCURRENCY * ${CONCURRENCY_MULTIPLIER} + ${GSP_NUM_GROUPS} - 1) / ${GSP_NUM_GROUPS} ))
   N_TOTAL=\$((PER_GROUP * ${GSP_NUM_GROUPS}))
   for IO in ${IO_QUOTED}; do
   INPUT_LEN=\$(echo \"\$IO\" | awk '{print \$1}')

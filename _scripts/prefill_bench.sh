@@ -18,6 +18,7 @@ BASE_URL=""
 MODEL_PATH=""
 SERVED_MODEL_NAME=""
 SEED=123
+CONCURRENCY_MULTIPLIER=5
 SLEEP_TIME=60
 REPORT_DIR=""
 CHIP_TYPE=""
@@ -54,6 +55,8 @@ Usage: $0 -F <sglang|vllm> [OPTIONS]
   -c, --concurrency LIST        并发数列表(逗号分隔,各IO组合按输入长度限上限: ≤64K全档/128K~256K≤64)
                                 (default: $DEFAULT_CONCURRENCY)
   -i, --io-combinations LIST    IO组合(逗号分隔,每组"in out") (default: $DEFAULT_IO)
+  --seed N                      随机数据集种子    (default: $SEED)
+  --concurrency-multiplier N    并发倍数: 请求数(num-prompts) = 并发数 × N  (default: $CONCURRENCY_MULTIPLIER)
   -s, --sleep SECONDS           每次测试间隔秒数    (default: $SLEEP_TIME)
   -d, --describe TEXT           模型描述信息(可选,填入报告末尾)
   -f, --foreground              前台执行(默认后台)
@@ -75,6 +78,8 @@ while [[ $# -gt 0 ]]; do
     -r|--report-dir)          REPORT_DIR="$2";           shift 2 ;;
     -c|--concurrency)         CONCURRENCY_ARG="$2";      shift 2 ;;
     -i|--io-combinations)     IO_ARG="$2";              shift 2 ;;
+    --seed)                   SEED="$2";                shift 2 ;;
+    --concurrency-multiplier) CONCURRENCY_MULTIPLIER="$2"; shift 2 ;;
     -s|--sleep)               SLEEP_TIME="$2";           shift 2 ;;
     -d|--describe)            DESCRIBE="$2";             shift 2 ;;
     -f|--foreground)          BACKGROUND=false;          shift   ;;
@@ -141,6 +146,16 @@ case "$PD" in
     ;;
 esac
 
+# --- 校验 seed 与并发倍数 ---
+if ! [[ "$SEED" =~ ^[0-9]+$ ]]; then
+  echo "ERROR: --seed 必须为非负整数，当前值: '$SEED'" >&2
+  exit 1
+fi
+if ! [[ "$CONCURRENCY_MULTIPLIER" =~ ^[1-9][0-9]*$ ]]; then
+  echo "ERROR: --concurrency-multiplier 必须为 >=1 的整数，当前值: '$CONCURRENCY_MULTIPLIER'" >&2
+  exit 1
+fi
+
 # --- 前置校验：serve_command.sh ---
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
@@ -179,6 +194,8 @@ if [[ "$BACKGROUND" == "true" ]]; then
     --concurrency "${CONCURRENCY_ARG:-$DEFAULT_CONCURRENCY}" \
     --io-combinations "${IO_ARG:-$DEFAULT_IO}" \
     --sleep "$SLEEP_TIME" \
+    --seed "$SEED" \
+    --concurrency-multiplier "$CONCURRENCY_MULTIPLIER" \
     --chip-type "$CHIP_TYPE" \
     --tester "$TESTER" \
     --pd "$PD" \
@@ -226,6 +243,8 @@ echo "=== Model Path:   $MODEL_PATH"
 echo "=== Served Name:  $SERVED_MODEL_NAME"
 echo "=== Report Dir:   $RUN_DIR"
 echo "=== output_len=1 (pure prefill, 0 decode) ==="
+echo "=== Seed:          $SEED"
+echo "=== Conc Multiplier: $CONCURRENCY_MULTIPLIER"
 echo "=== Tester:       $TESTER"
 echo "=== PD Mode:      $PD"
 echo "=========================================="
@@ -436,7 +455,8 @@ append_sglang_cache_report() {
 }
 
 for concurrency in "${concurrency_list[@]}"; do
-  num_prompts=$((concurrency * 5))
+  # num_prompts = 并发数 × 并发倍数（默认 5，增加统计样本数，提高测量稳定性）
+  num_prompts=$((concurrency * CONCURRENCY_MULTIPLIER))
   echo ""
   echo "--- Concurrency=$concurrency, Num Prompts=$num_prompts ---"
 
@@ -547,10 +567,11 @@ IO_QUOTED="${IO_QUOTED% }"
 
 if [[ "$FRAMEWORK" == "sglang" ]]; then
   BENCH_COMMANDS="# 并发数列表: ${CONCURRENCY_STR}
+# 并发倍数: ${CONCURRENCY_MULTIPLIER}（num-prompts = 并发数 × 并发倍数）
 # IO 组合: ${IO_STR}
 # 并发档位按输入长度限上限: ≤64K 全档 / 128K~256K ≤64（超出自动跳过）
 for CONCURRENCY in ${CONC_LIST}; do
-  NUM_PROMPTS=\$((CONCURRENCY * 5))
+  NUM_PROMPTS=\$((CONCURRENCY * ${CONCURRENCY_MULTIPLIER}))
   for IO in ${IO_QUOTED}; do
     INPUT_LEN=\$(echo \"\$IO\" | awk '{print \$1}')
     OUTPUT_LEN=\$(echo \"\$IO\" | awk '{print \$2}')
@@ -572,10 +593,11 @@ for CONCURRENCY in ${CONC_LIST}; do
 done"
 elif [[ "$FRAMEWORK" == "vllm" ]]; then
   BENCH_COMMANDS="# 并发数列表: ${CONCURRENCY_STR}
+# 并发倍数: ${CONCURRENCY_MULTIPLIER}（num-prompts = 并发数 × 并发倍数）
 # IO 组合: ${IO_STR}
 # 并发档位按输入长度限上限: ≤64K 全档 / 128K~256K ≤64（超出自动跳过）
 for CONCURRENCY in ${CONC_LIST}; do
-  NUM_PROMPTS=\$((CONCURRENCY * 5))
+  NUM_PROMPTS=\$((CONCURRENCY * ${CONCURRENCY_MULTIPLIER}))
   for IO in ${IO_QUOTED}; do
     INPUT_LEN=\$(echo \"\$IO\" | awk '{print \$1}')
     OUTPUT_LEN=\$(echo \"\$IO\" | awk '{print \$2}')

@@ -74,6 +74,7 @@ python -m sglang.launch_server \
 ## 三、Benchmark 测试命令
 
 > 以下为实际执行的 bench 工具命令，由程序自动记录（参数值用变量表示，实际运行时按测试矩阵逐组替换）。
+> `$SEED` 为随机数据集种子（脚本 `--seed` 参数，默认 123）；`$NUM_PROMPTS` / `$N_TOTAL` 为请求数 = 并发数 × 并发倍数（脚本 `--concurrency-multiplier` 参数，默认：基础 1 / 纯 Prefill 5 / 纯 Decode 10 / 缓存 5）；`$PER_GROUP` 为共享前缀每组条数。
 
 <!-- BENCH_COMMAND_START -->
 ```bash
@@ -89,7 +90,7 @@ python -m sglang.benchmark.serving \
   --random-range-ratio 1.0 \
   --num-prompts $NUM_PROMPTS \
   --max-concurrency $CONCURRENCY \
-  --seed 123
+  --seed $SEED
 
 # SGLang 纯Decode 命令（第2章，generated-shared-prefix 数据集）
 python -m sglang.benchmark.serving \
@@ -105,7 +106,7 @@ python -m sglang.benchmark.serving \
   --gsp-output-len $OUTPUT_LEN \
   --num-prompts $NUM_PROMPTS \
   --max-concurrency $CONCURRENCY \
-  --seed 123
+  --seed $SEED
 
 # SGLang 指定缓存命中率命令（第3章，前缀级命中，两阶段：预热+测试）
 # 阶段1：预热（串行，每组 1 条请求填该组共享前缀入缓存，共 $NUM_GROUPS 条，不计量）
@@ -122,7 +123,7 @@ python -m sglang.benchmark.serving \
   --gsp-output-len 1 \
   --num-prompts $NUM_GROUPS \
   --max-concurrency 1 \
-  --seed 123
+  --seed $SEED
 # 阶段2：测试（目标并发，计量）
 python -m sglang.benchmark.serving \
   --backend sglang-oai-chat \
@@ -137,7 +138,7 @@ python -m sglang.benchmark.serving \
   --gsp-output-len $OUTPUT_LEN \
   --num-prompts $N_TOTAL \
   --max-concurrency $CONCURRENCY \
-  --seed 123 \
+  --seed $SEED \
   --cache-report
 
 # vLLM Benchmark 命令（第1章 / 第2章纯Prefill 通用）
@@ -156,7 +157,7 @@ vllm bench serve \
   --temperature 0.7 \
   --random-range-ratio 0.0 \
   --random-prefix-len 0 \
-  --seed 123 \
+  --seed $SEED \
   --metric_percentiles 90,95,99 \
   --ready-check-timeout-sec 30
 
@@ -176,7 +177,7 @@ vllm bench serve \
   --max-concurrency $CONCURRENCY \
   --trust-remote-code \
   --temperature 0.7 \
-  --seed 123 \
+  --seed $SEED \
   --metric_percentiles 90,95,99 \
   --ready-check-timeout-sec 30
 
@@ -197,7 +198,7 @@ vllm bench serve \
   --max-concurrency 1 \
   --trust-remote-code \
   --temperature 0.7 \
-  --seed 123 \
+  --seed $SEED \
   --metric_percentiles 90,95,99 \
   --ready-check-timeout-sec 30
 # 阶段2：测试（目标并发，计量）
@@ -216,7 +217,7 @@ vllm bench serve \
   --max-concurrency $CONCURRENCY \
   --trust-remote-code \
   --temperature 0.7 \
-  --seed 123 \
+  --seed $SEED \
   --metric_percentiles 90,95,99 \
   --ready-check-timeout-sec 30
 ```

@@ -36,7 +36,7 @@
 
 ### 1.1 测试目标
 
-在固定请求数（num_prompts = 并发数）、固定输入输出上下文长度组合下，并发数逐级递增，测量推理服务的端到端性能指标：输入/输出/总 token 吞吐量、TTFT（首 token 延迟）、TPOT（每 token 生成时间）。
+在固定请求数（num_prompts = 并发数 × 并发倍数，`--concurrency-multiplier` 默认 1）、固定输入输出上下文长度组合下，并发数逐级递增，测量推理服务的端到端性能指标：输入/输出/总 token 吞吐量、TTFT（首 token 延迟）、TPOT（每 token 生成时间）。
 
 本测试模拟**真实在线服务**的负载模式：客户端以指定并发度持续发送请求，请求总数等于并发数，测量该并发级别下的聚合吞吐与延迟。
 
@@ -89,7 +89,7 @@
 | 指标 | 提取方式 | 日志中的字段名 |
 |---|---|---|
 | **前缀长度** | 从日志文件名提取：decode 取文件名 `prefix-{PL}`；cache = `输入长度 × 命中率 / 100`（与脚本公式一致）；benchmark/prefill 无共享前缀概念，显示 `—` | `decode_bs-*_prefix-{PL}-*.log` / `cache_bs-*_hit-{HR}_input-{IL}-*.log` |
-| **请求数** | 日志实测 `Successful requests`（真实完成请求数）；旧日志无该行时按类型公式回退：benchmark=并发数 / prefill=5×并发 / decode=10×并发 / cache=5×并发 | `Successful requests:` (SGLang / vLLM) |
+| **请求数** | 日志实测 `Successful requests`（真实完成请求数）；旧日志无该行时按类型公式回退：benchmark=并发数×倍数(默认1) / prefill=并发数×倍数(默认5) / decode=并发数×倍数(默认10) / cache=并发数×倍数(默认5) | `Successful requests:` (SGLang / vLLM) |
 | **输入token吞吐量** | SGLang 直接提取；vLLM 用 `总吞吐量 - 输出吞吐量` 计算 | `Input token throughput (tok/s)` |
 | **输出token吞吐量** | 直接提取 | `Output token throughput (tok/s)` |
 | **总token吞吐量** | 直接提取 | `Total token throughput (tok/s)` |
@@ -158,6 +158,7 @@ BASE_URL=""
 MODEL_PATH=""
 SERVED_MODEL_NAME=""
 SEED=123
+CONCURRENCY_MULTIPLIER=1
 SLEEP_TIME=60
 REPORT_DIR=""
 CHIP_TYPE=""
@@ -167,7 +168,7 @@ DESCRIBE=""
 BACKGROUND=true
 TIMEOUT=3600
 
-# 并发数列表（同时也是 num-prompts 的值）
+# 并发数列表（num-prompts = 并发数 × 并发倍数 CONCURRENCY_MULTIPLIER）
 DEFAULT_CONCURRENCY="1,8,32,64,128"
 # 输入输出长度组合，格式 "in_len out_len"，组合之间逗号分隔
 DEFAULT_IO="8192 512,32768 512,65536 512,131072 1024,262144 1024,512000 1024,1000000 1024"
@@ -192,6 +193,8 @@ Usage: $0 -F <sglang|vllm> [OPTIONS]
                                 (default: $DEFAULT_CONCURRENCY)
   -i, --io-combinations LIST    IO组合(逗号分隔,每组"in out")
                                   (default: $DEFAULT_IO)
+  --seed N                      随机数据集种子    (default: $SEED)
+  --concurrency-multiplier N    并发倍数: 请求数(num-prompts) = 并发数 × N  (default: $CONCURRENCY_MULTIPLIER)
   -s, --sleep SECONDS           每次测试间隔秒数    (default: $SLEEP_TIME)
   -d, --describe TEXT           模型描述信息(可选,填入报告末尾)
   -f, --foreground             前台执行(默认后台)
@@ -214,6 +217,8 @@ while [[ $# -gt 0 ]]; do
     -r|--report-dir)          REPORT_DIR="$2";           shift 2 ;;
     -c|--concurrency)         CONCURRENCY_ARG="$2";      shift 2 ;;
     -i|--io-combinations)     IO_ARG="$2";              shift 2 ;;
+    --seed)                   SEED="$2";                shift 2 ;;
+    --concurrency-multiplier) CONCURRENCY_MULTIPLIER="$2"; shift 2 ;;
     -s|--sleep)               SLEEP_TIME="$2";           shift 2 ;;
     -d|--describe)            DESCRIBE="$2";             shift 2 ;;
     -f|--foreground)          BACKGROUND=false;          shift   ;;
@@ -280,6 +285,16 @@ case "$PD" in
     ;;
 esac
 
+# --- 校验 seed 与并发倍数 ---
+if ! [[ "$SEED" =~ ^[0-9]+$ ]]; then
+  echo "ERROR: --seed 必须为非负整数，当前值: '$SEED'" >&2
+  exit 1
+fi
+if ! [[ "$CONCURRENCY_MULTIPLIER" =~ ^[1-9][0-9]*$ ]]; then
+  echo "ERROR: --concurrency-multiplier 必须为 >=1 的整数，当前值: '$CONCURRENCY_MULTIPLIER'" >&2
+  exit 1
+fi
+
 # --- 前置校验：serve_command.sh ---
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
@@ -318,6 +333,8 @@ if [[ "$BACKGROUND" == "true" ]]; then
     --concurrency "${CONCURRENCY_ARG:-$DEFAULT_CONCURRENCY}" \
     --io-combinations "${IO_ARG:-$DEFAULT_IO}" \
     --sleep "$SLEEP_TIME" \
+    --seed "$SEED" \
+    --concurrency-multiplier "$CONCURRENCY_MULTIPLIER" \
     --chip-type "$CHIP_TYPE" \
     --tester "$TESTER" \
     --pd "$PD" \
@@ -587,6 +604,8 @@ echo "=== Model Path:   $MODEL_PATH"
 echo "=== Served Name:  $SERVED_MODEL_NAME"
 echo "=== Report Dir:   $RUN_DIR"
 echo "=== Concurrency:  ${concurrency_list[*]}"
+echo "=== Seed:          $SEED"
+echo "=== Conc Multiplier: $CONCURRENCY_MULTIPLIER"
 echo "=== IO Combos:     ${io_combinations[*]}"
 echo "=== Chip Type:    ${CHIP_TYPE:-(未指定)}"
 echo "=== Tester:       $TESTER"
@@ -619,7 +638,8 @@ FAIL_COUNT=0
 
 # 外层循环：遍历不同的并发值
 for concurrency in "${concurrency_list[@]}"; do
-  num_prompts=$concurrency
+  # num_prompts = 并发数 × 并发倍数（默认 1，即请求数与并发数相同）
+  num_prompts=$((concurrency * CONCURRENCY_MULTIPLIER))
 
   echo ""
   echo "--- Configuration: Max Concurrency=$concurrency, Num Prompts=$num_prompts ---"
@@ -746,12 +766,13 @@ IO_QUOTED="${IO_QUOTED% }"
 
 if [[ "$FRAMEWORK" == "sglang" ]]; then
   BENCH_COMMANDS="# 并发数列表: ${CONCURRENCY_STR}
+# 并发倍数: ${CONCURRENCY_MULTIPLIER}（num-prompts = 并发数 × 并发倍数）
 # IO 组合: ${IO_STR}
 # 并发档位按输入长度限上限: ≤64K 全档 / 128K~256K ≤64 / 512K ≤32 / 1M ≤16（超出自动跳过）
 # 注: 脚本在每组测试前后查询服务端 /metrics 的 sglang:prefill_effective_tokens_total
 #     计数器，差值计算真实前缀缓存命中率（含 HiCache L1/L2/L3）并写入日志
 for CONCURRENCY in ${CONC_LIST}; do
-  NUM_PROMPTS=\$CONCURRENCY
+  NUM_PROMPTS=\$((CONCURRENCY * ${CONCURRENCY_MULTIPLIER}))
   for IO in ${IO_QUOTED}; do
     INPUT_LEN=\$(echo \"\$IO\" | awk '{print \$1}')
     OUTPUT_LEN=\$(echo \"\$IO\" | awk '{print \$2}')
@@ -774,12 +795,13 @@ for CONCURRENCY in ${CONC_LIST}; do
 done"
 elif [[ "$FRAMEWORK" == "vllm" ]]; then
   BENCH_COMMANDS="# 并发数列表: ${CONCURRENCY_STR}
+# 并发倍数: ${CONCURRENCY_MULTIPLIER}（num-prompts = 并发数 × 并发倍数）
 # IO 组合: ${IO_STR}
 # 并发档位按输入长度限上限: ≤64K 全档 / 128K~256K ≤64 / 512K ≤32 / 1M ≤16（超出自动跳过）
 # 注: 脚本在每组测试前后查询服务端 /metrics 的 vllm:prefix_cache_* 计数器，
 #     差值计算真实前缀缓存命中率并写入日志（报告中 L1命中率/L3命中率列为实测值）
 for CONCURRENCY in ${CONC_LIST}; do
-  NUM_PROMPTS=\$CONCURRENCY
+  NUM_PROMPTS=\$((CONCURRENCY * ${CONCURRENCY_MULTIPLIER}))
   for IO in ${IO_QUOTED}; do
     INPUT_LEN=\$(echo \"\$IO\" | awk '{print \$1}')
     OUTPUT_LEN=\$(echo \"\$IO\" | awk '{print \$2}')
@@ -899,6 +921,8 @@ fi
 | `--report-dir` | `-r` | 报告输出目录 | `./sglang_reports` / `./vllm_reports`（按框架自动选择） |
 | `--concurrency` | `-c` | 并发数列表（逗号分隔；各 IO 组合按输入长度限并发上限：≤64K 全档 / 128K~256K ≤64 / 512K ≤32 / 1M ≤16，超出档位自动跳过） | `1,8,32,64,128` |
 | `--io-combinations` | `-i` | IO组合（逗号分隔，每组"in out"） | `8192 512,32768 512,65536 512,131072 1024,262144 1024,512000 1024,1000000 1024` |
+| `--seed` | | 随机数据集种子（固定 seed 可复现） | `123` |
+| `--concurrency-multiplier` | | 并发倍数：请求数 num_prompts = 并发数 × 此值 | `1` |
 | `--sleep` | `-s` | 每次测试间隔秒数 | `60` |
 | `--describe` | `-d` | 模型描述信息（可选，填入报告末尾单独章节） | — |
 | `--foreground` | `-f` | 前台执行（脚本默认后台执行） | — |
@@ -1322,7 +1346,7 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 | **数据集** | `random-ids`(SGLang) / `random`(vLLM) | bench 工具动态生成的随机 token 序列（无真实语义，固定 seed 可复现），与第 1 章 Benchmark 相同；`random-prefix-len 0` 无共享前缀 |
 | **输入长度** | `65536` `131072` `262144` | 3 级覆盖 64K~256K prefill 算力；262144 组要求模型上下文 ≥ 262145 |
 | **输出长度** | `1` | 固定 1，确保 0 次 decode |
-| **并发数 / num-prompts** | `1, 8, 32, 64, 128`（num_prompts = 5 × 并发数） | 并发数控制 max-concurrency，num_prompts = 5×并发数增加统计样本。各 IO 组合按输入长度限并发上限：≤64K 全档 / 128K~256K ≤64（超出档位自动跳过） |
+| **并发数 / num-prompts** | `1, 8, 32, 64, 128`（num_prompts = 并发倍数 × 并发数，默认倍数 5） | 并发数控制 max-concurrency，num_prompts = 并发数 × 并发倍数（`--concurrency-multiplier`，默认 5）增加统计样本。各 IO 组合按输入长度限并发上限：≤64K 全档 / 128K~256K ≤64（超出档位自动跳过） |
 | **random-range-ratio** | `1.0`(SGLang) / `0.0`(vLLM) | 固定长度（SGLang 1.0 表示完全使用 random-input-len，vLLM 0.0 表示固定长度，两者均为固定长度） |
 | **random-prefix-len** | `0` | 无共享前缀 |
 | **Seed** | `123` | 可复现 |
@@ -1365,6 +1389,8 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 | `--model-path` | `-m` | ✅ | — | 模型路径 |
 | `--served-model-name` | `-n` | ✅ | — | 服务模型名 |
 | `--io-combinations` | `-i` | | `65536 1,131072 1,262144 1` | IO 组合（逗号分隔，每组 `"输入 输出"`） |
+| `--seed` | | | `123` | 随机数据集种子（固定 seed 可复现） |
+| `--concurrency-multiplier` | | | `5` | 并发倍数：请求数 num_prompts = 并发数 × 此值 |
 | `--concurrency` | `-c` | | `1,8,32,64,128` | 并发数列表（各 IO 组合按输入长度限并发上限：≤64K 全档 / 128K~256K ≤64，超出档位自动跳过） |
 | `--chip-type` | `-t` | ✅ | — | 芯片类型（CSV 列名后缀） |
 | `--tester` | `-T` | ✅ | — | 测试人员（用于报告目录层级和报告命名） |
@@ -1387,7 +1413,7 @@ python -m sglang.benchmark.serving \
   --random-input-len  $input_len    \   # 65536 / 131072 / 262144（按输入长度限并发档位）
   --random-output-len 1             \   # 固定 1
   --random-range-ratio 1.0          \
-  --num-prompts $num_prompts     \   # = 5 × 并发数
+  --num-prompts $num_prompts     \   # = 并发倍数（默认 5）× 并发数
   --max-concurrency $concurrency    \
   --seed 123
 ```
@@ -1404,7 +1430,7 @@ vllm bench serve \
   --random-input-len  $input_len \
   --random-output-len 1 \
   --random-prefix-len 0 \
-  --num-prompts $num_prompts --max-concurrency $concurrency \   # num_prompts = 5 × 并发数
+  --num-prompts $num_prompts --max-concurrency $concurrency \   # num_prompts = 并发倍数（默认 5）× 并发数
   --trust-remote-code --temperature 0.7 \
   --random-range-ratio 0.0 --seed 123 \
   --metric_percentiles 90,95,99 --ready-check-timeout-sec 30
@@ -1500,7 +1526,7 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 | **输出长度** | `512`（≤64K 前缀组）/ `1024`（128K~256K 前缀组） | 按前缀组配对，足够 decode 迭代测量吞吐；显式 `-o` 指定时前缀 × 输出全交叉 |
 | **新增 token 数** | `1` | 每请求在共享前缀后新增 1 个 token（确保 prefill≈0） |
 | **并发数** | `1, 8, 32, 64, 128` | max-concurrency |
-| **num-prompts** | `10 × 并发数` | 增加统计样本数，提高吞吐/延迟测量稳定性（bench 工具自带 warmup 预热，已填充前缀缓存） |
+| **num-prompts** | `并发倍数 × 并发数`（默认倍数 10） | 增加统计样本数，提高吞吐/延迟测量稳定性（bench 工具自带 warmup 预热，已填充前缀缓存） |
 | **random-range-ratio** | `1.0`(SGLang) / `0.0`(vLLM) | 固定长度（SGLang 1.0 表示完全使用 random-input-len，vLLM 0.0 表示固定长度，两者均为固定长度） |
 | **Seed** | `123` | 可复现 |
 
@@ -1570,8 +1596,10 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 | `--served-model-name` | `-n` | ✅ | — | 服务模型名 |
 | `--prefix-lens` | `-p` | | `8192,32768,65536,131072,262144` | 前缀长度列表 |
 | `--output-lens` | `-o` | | —（按前缀组配对） | 输出长度列表；缺省时 ≤64K 前缀 → 512、128K~256K 前缀 → 1024，显式指定则前缀 × 输出全交叉 |
-| `--concurrency` | `-c` | | `1,8,32,64,128` | 并发数列表（num_prompts = 10×并发数） |
-| `--gsp-num-groups` | `-g` | | `1` | 共享前缀组数（组内请求共享同一前缀，组间不同；每组条数 = ceil(10×并发数/组数)，总请求数 = 每组条数 × 组数） |
+| `--concurrency` | `-c` | | `1,8,32,64,128` | 并发数列表（num_prompts = 并发数 × 并发倍数，`--concurrency-multiplier` 默认 10） |
+| `--gsp-num-groups` | `-g` | | `1` | 共享前缀组数（组内请求共享同一前缀，组间不同；每组条数 = ceil(并发倍数×并发数/组数)，总请求数 = 每组条数 × 组数） |
+| `--seed` | | | `123` | 随机数据集种子（固定 seed 可复现；组内共享前缀依赖固定 seed） |
+| `--concurrency-multiplier` | | | `10` | 并发倍数：请求总数 = 每组条数 × 组数，每组条数 = ceil(此值×并发数/组数) |
 | `--chip-type` | `-t` | ✅ | — | 芯片类型（CSV 列名后缀） |
 | `--tester` | `-T` | ✅ | — | 测试人员（用于报告目录层级和报告命名） |
 | `--pd` | `-P` | ✅ | — | PD部署模式: `agg`(非PD分离) 或 `disagg`(PD分离) |
@@ -1592,7 +1620,7 @@ python -m sglang.benchmark.serving \
   --served-model-name "$SERVED_MODEL_NAME" \
   --dataset-name generated-shared-prefix \
   --gsp-num-groups $gsp_groups           \   # 共享前缀组数（-g 指定，默认 1；组内共享，组间不同）
-  --gsp-prompts-per-group $per_group     \   # = ceil(10×并发/组数)，增加样本量提高统计稳定性
+  --gsp-prompts-per-group $per_group     \   # = ceil(并发倍数×并发/组数)（默认倍数 10），增加样本量提高统计稳定性
   --gsp-system-prompt-len $prefix_len   \   # 共享前缀长度
   --gsp-question-len 1                  \   # 每请求仅 1 个新 token
   --gsp-output-len $output_len           \   # 512 / 1024（按前缀组配对）
@@ -1624,9 +1652,9 @@ vllm bench serve \
 > 和 `prefix_repetition` 显式保证同组请求共享完全相同的前缀，首个请求填充缓存
 > 后后续请求全部命中，确保 prefill≈0，测到纯 decode 性能。
 
-> **关于 num_prompts = 10 × 并发数**：bench 工具自带 warmup 机制（启动时先发送 1 个请求
+> **关于 num_prompts = 并发倍数 × 并发数（`--concurrency-multiplier`，默认 10）**：bench 工具自带 warmup 机制（启动时先发送 1 个请求
 > 预热前缀缓存），主 benchmark 的所有请求均可命中缓存，不存在首请求 prefill 污染问题。
-> 默认 1 组共享前缀；`-g` 指定 G > 1 组时，每组条数 = ceil(10×并发/G)、总请求数 = 每组条数 × G，
+> 默认 1 组共享前缀；`-g` 指定 G > 1 组时，每组条数 = ceil(并发倍数×并发/G)、总请求数 = 每组条数 × G，
 > 每组首请求为 prefill 冷启动（组内其余请求命中），多组更接近多租户共享场景。
 > 设为 10 倍并发数是为了增加统计样本、让服务端经历"满并发 slot → 请求完成 → 新请求补入"
 > 的动态过程，更接近稳态负载。若需流式 SSE 精确测量 TTFT/TPOT，可使用下方 HTTP 脚本。
@@ -1805,7 +1833,7 @@ HBM 带宽 / NCCL 通信），构建 roofline 上界，计算 MFU 达成率。
   （output_len=1，快速完成）
 
 阶段 2 — 测试（计量）：
-  用目标并发发送 N_total = 5 × 并发数 个请求
+  用目标并发发送 N_total = 并发倍数 × 并发数 个请求（默认倍数 5）
   每组内请求共享该组前缀（相同 seed + 组数）→ 前缀命中
   每个请求有不同的后缀 → 后缀未命中
   每个请求 prefill 唯一后缀部分（= 输入长度 × (1-命中率)）
@@ -1863,11 +1891,11 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 | **缓存命中率** | `90`（默认） | 可通过 `-R` 指定 1~99，前缀级命中 |
 | **共享前缀长度** | `输入长度 × 命中率/100` | 90% → 58982 / 117964 / 235929（对应 3 组输入） |
 | **唯一后缀长度** | `输入长度 - 共享前缀长度` | 90% → 6554 / 13108 / 26215（对应 3 组输入） |
-| **N_total** | `5 × concurrency`（按组数对齐） | 测试阶段总请求数 = 每组条数 × 组数，每组条数 = ceil(5×并发/组数) |
+| **N_total** | `并发倍数 × concurrency`（默认倍数 5，按组数对齐） | 测试阶段总请求数 = 每组条数 × 组数，每组条数 = ceil(并发倍数×并发/组数) |
 | **预热请求数** | `= 组数 G`（默认 1） | 阶段 1 预热：每组 1 条请求填入该组共享前缀（不计量，结果表自动跳过预热日志） |
 | **共享前缀组数** | `1`（`-g` 可配） | 组内请求共享该组前缀，组间前缀不同 |
 | **并发数** | `1, 8, 32, 64, 128` | max-concurrency（仅阶段 2） |
-| **Seed** | `123` | 可复现（预热和测试必须相同） |
+| **Seed** | `123`（`--seed` 可配） | 可复现（预热和测试必须相同） |
 
 **测试矩阵**：IO 组合 3 组 × 并发 5 档 = **15 组测试**（每个框架、每个指定命中率）。
 
@@ -1913,9 +1941,11 @@ vllm serve /data/lxl/GLM-5.2-Channel-FP8-w8a8 \
 | `--tester` | `-T` | ✅ | — | 测试人员（用于报告目录层级和报告命名） |
 | `--pd` | `-P` | ✅ | — | PD部署模式: `agg`(非PD分离) 或 `disagg`(PD分离) |
 | `--report-dir` | `-r` | | `./{framework}_cache_reports` | 报告输出目录 |
-| `--concurrency` | `-c` | | `1,8,32,64,128` | 并发数列表 |
+| `--concurrency` | `-c` | | `1,8,32,64,128` | 并发数列表（测试请求数 N_total = 并发数 × 并发倍数，`--concurrency-multiplier` 默认 5） |
 | `--io-combinations` | `-i` | | `65536 512,131072 1024,262144 1024` | IO 组合（逗号分隔，每组 `"输入 输出"`；共享前缀/唯一后缀按各组输入长度计算） |
-| `--gsp-num-groups` | `-g` | | `1` | 共享前缀组数（组内请求共享该组前缀，组间不同；预热每组 1 条，测试每组条数 = ceil(5×并发数/组数)） |
+| `--gsp-num-groups` | `-g` | | `1` | 共享前缀组数（组内请求共享该组前缀，组间不同；预热每组 1 条，测试每组条数 = ceil(并发倍数×并发数/组数)） |
+| `--seed` | | | `123` | 随机数据集种子（预热与测试共享前缀依赖固定 seed） |
+| `--concurrency-multiplier` | | | `5` | 并发倍数：测试请求数 N_total = 并发数 × 此值（预热不受影响） |
 | `--cache-hit-rate` | `-R` | | `90` | 缓存命中率百分比（1~99），前缀级命中 |
 | `--sleep` | `-s` | | `60` | 每组测试间隔（秒） |
 | `--describe` | `-d` | | — | 模型描述信息（可选，填入报告末尾单独章节） |
@@ -2039,7 +2069,7 @@ general-benchmark-test/
 |---|---|---|
 | `bench.sh` | `sglang` (benchmark.serving) / `vllm` (bench serve) | 统一脚本，`-F` 指定框架 |
 | `prefill_bench.sh` | `sglang` / `vllm` | output_len=1 变体，`-F` 指定框架 |
-| `decode_bench.sh` | `sglang` / `vllm` | SGLang 用 GSP / vLLM 用 prefix_repetition，`num_prompts = 10×并发数` 增加样本量 |
+| `decode_bench.sh` | `sglang` / `vllm` | SGLang 用 GSP / vLLM 用 prefix_repetition，`num_prompts = 并发数×倍数`（默认 10）增加样本量 |
 | `cache_bench.sh` | `sglang` / `vllm` | 前缀级命中：共享前缀(命中)+唯一后缀(未命中)，两阶段预热+测试，`-R` 指定命中率（默认 90%） |
 | `decode_http_sweep.py` | **仅 Python 标准库** | 零第三方依赖，跨框架/跨厂商可用【仅供参考，实际测试不使用】 |
 | `collect_results.py` | **仅 Python 标准库** | 扫描日志提取指标生成 CSV，所有脚本结束后自动调用 |
@@ -2051,10 +2081,10 @@ general-benchmark-test/
 
 | 测试场景 | SGLang 启动参数 | vLLM 启动参数 | 前缀缓存 | 数据集 | num_prompts |
 |---|---|---|---|---|---|
-| **第1章 Benchmark** | `--disable-radix-cache` | `--no-enable-prefix-caching` | **关** | `random-ids` / `random` | = 并发数 |
-| **第2章 纯 Prefill** | `--disable-radix-cache` | `--no-enable-prefix-caching` | **关** | `random-ids` / `random` | = 5×并发数 |
-| **第2章 纯 Decode** | 默认（不加 `--disable-radix-cache`） | 默认（不加 `--no-enable-prefix-caching`） | **开** | `generated-shared-prefix` / `prefix_repetition` | = 10×并发数 |
-| **第3章 缓存命中率** | 默认（不加 `--disable-radix-cache`） | 默认（不加 `--no-enable-prefix-caching`） | **开** | `generated-shared-prefix` / `prefix_repetition` | N_total = 5×并发数（另预热 = 组数条请求，不计量；组数 `-g` 默认 1） |
+| **第1章 Benchmark** | `--disable-radix-cache` | `--no-enable-prefix-caching` | **关** | `random-ids` / `random` | = 并发数×倍数（默认 1） |
+| **第2章 纯 Prefill** | `--disable-radix-cache` | `--no-enable-prefix-caching` | **关** | `random-ids` / `random` | = 并发数×倍数（默认 5） |
+| **第2章 纯 Decode** | 默认（不加 `--disable-radix-cache`） | 默认（不加 `--no-enable-prefix-caching`） | **开** | `generated-shared-prefix` / `prefix_repetition` | = 并发数×倍数（默认 10） |
+| **第3章 缓存命中率** | 默认（不加 `--disable-radix-cache`） | 默认（不加 `--no-enable-prefix-caching`） | **开** | `generated-shared-prefix` / `prefix_repetition` | N_total = 并发数×倍数（默认 5）（另预热 = 组数条请求，不计量；组数 `-g` 默认 1） |
 
 ### 快速参考：容错与超时
 
