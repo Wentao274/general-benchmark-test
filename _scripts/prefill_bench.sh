@@ -27,6 +27,8 @@ PD=""
 DESCRIBE=""
 BACKGROUND=true
 TIMEOUT=3600
+CONCURRENCY_ARG=""
+IO_ARG=""
 
 DEFAULT_CONCURRENCY="1,8,32,64,128"
 DEFAULT_IO="65536 1,131072 1,262144 1"
@@ -52,8 +54,11 @@ Usage: $0 -F <sglang|vllm> [OPTIONS]
 
 可选参数:
   -r, --report-dir DIR          报告输出目录        (default: ./{framework}_prefill_reports)
-  -c, --concurrency LIST        并发数列表(逗号分隔,各IO组合按输入长度限上限: ≤64K全档/128K~256K≤64)
-                                (default: $DEFAULT_CONCURRENCY)
+  -c, --concurrency LIST        并发档位。两种形式:
+                                 全局: 逗号分隔单档, 如 "1,8,32,64,128" (default: $DEFAULT_CONCURRENCY)
+                                 逐组: 组间逗号、组内空格, 与 -i IO组合从第一组起一一对应, 如 "1 8 32 64,1 8 32,1 8"
+                                   组数=1 全局 / 组数>组合数 舍弃多余组 / 组合数>组数 未匹配组合用默认
+                                   未传 -i 时只取第一组作全局; 各IO组合仍按输入长度限上限(≤64K全档/128K~256K≤64)
   -i, --io-combinations LIST    IO组合(逗号分隔,每组"in out") (default: $DEFAULT_IO)
   --seed N                      随机数据集种子    (default: $SEED)
   --concurrency-multiplier N    并发倍数: 请求数(num-prompts) = 并发数 × N  (default: $CONCURRENCY_MULTIPLIER)
@@ -156,6 +161,32 @@ if ! [[ "$CONCURRENCY_MULTIPLIER" =~ ^[1-9][0-9]*$ ]]; then
   exit 1
 fi
 
+# --- 校验并发档位（-c 支持全局逗号列表或逐组指定：组间逗号、组内空格） ---
+__conc_raw="${CONCURRENCY_ARG:-$DEFAULT_CONCURRENCY}"
+if [[ "$__conc_raw" == *[[:space:]]* ]]; then
+  IFS=',' read -ra __conc_groups <<< "$__conc_raw"
+  for __grp in "${__conc_groups[@]}"; do
+    if [[ -z "$__grp" ]]; then
+      echo "ERROR: --concurrency 存在空的并发组（检查连续逗号），当前值: '$__conc_raw'" >&2
+      exit 1
+    fi
+    for __lvl in $__grp; do
+      if ! [[ "$__lvl" =~ ^[1-9][0-9]*$ ]]; then
+        echo "ERROR: --concurrency 并发档位 '$__lvl' 必须为 >=1 的整数，当前值: '$__conc_raw'" >&2
+        exit 1
+      fi
+    done
+  done
+else
+  IFS=',' read -ra __conc_levels <<< "$__conc_raw"
+  for __lvl in "${__conc_levels[@]}"; do
+    if [[ -z "$__lvl" ]] || ! [[ "$__lvl" =~ ^[1-9][0-9]*$ ]]; then
+      echo "ERROR: --concurrency 并发档位必须为 >=1 的整数（逗号分隔），当前值: '$__conc_raw'" >&2
+      exit 1
+    fi
+  done
+fi
+
 # --- 前置校验：serve_command.sh ---
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
@@ -210,11 +241,48 @@ if [[ "$BACKGROUND" == "true" ]]; then
   exit 0
 fi
 
-# --- 构建列表 ---
+# --- 构建并发档位与 IO 组合映射 ---
+# -c 无空格: 全局档位列表（逗号分隔单档，向后兼容）
+# -c 含空格: 并发组（组间逗号、组内空格），与 IO 组合从第一组起一一对应：
+#   组数=1 → 全局适用；组数<组合数 → 未匹配组合用默认档位；组数>组合数 → 舍弃多余组
+#   未显式传 -i 时 → 只取第一组作为全局
 CONCURRENCY_STR="${CONCURRENCY_ARG:-$DEFAULT_CONCURRENCY}"
 IO_STR="${IO_ARG:-$DEFAULT_IO}"
-IFS=',' read -ra concurrency_list <<< "$CONCURRENCY_STR"
 IFS=',' read -ra io_combinations <<< "$IO_STR"
+
+n_combos=${#io_combinations[@]}
+CONC_GLOBAL_MODE=true
+CONC_MAP_DESC="全局 ${CONCURRENCY_STR}"
+declare -a CONC_STRS=()
+if [[ "$CONCURRENCY_STR" == *[[:space:]]* ]]; then
+  IFS=',' read -ra __conc_groups <<< "$CONCURRENCY_STR"
+  n_groups=${#__conc_groups[@]}
+  if [[ -z "$IO_ARG" ]] || [[ "$n_groups" -eq 1 ]]; then
+    for ((ci=0; ci<n_combos; ci++)); do
+      CONC_STRS[$ci]="${__conc_groups[0]}"
+    done
+    if [[ -z "$IO_ARG" ]]; then
+      CONC_MAP_DESC="全局 ${__conc_groups[0]}（未传 -i，取第一组）"
+    else
+      CONC_MAP_DESC="全局 ${__conc_groups[0]}（单组）"
+    fi
+  else
+    CONC_GLOBAL_MODE=false
+    CONC_MAP_DESC="按 IO 组合一一对应（组数>组合数舍弃多余，未匹配组合用默认 ${DEFAULT_CONCURRENCY}）"
+    for ((ci=0; ci<n_combos; ci++)); do
+      if [[ "$ci" -lt "$n_groups" ]]; then
+        CONC_STRS[$ci]="${__conc_groups[$ci]}"
+      else
+        CONC_STRS[$ci]="$(echo "$DEFAULT_CONCURRENCY" | tr ',' ' ')"
+      fi
+    done
+  fi
+else
+  __conc_flat="$(echo "$CONCURRENCY_STR" | tr ',' ' ')"
+  for ((ci=0; ci<n_combos; ci++)); do
+    CONC_STRS[$ci]="$__conc_flat"
+  done
+fi
 
 # --- 各 IO 组合的并发数上限（按输入长度限制并发档位，超出自动跳过）---
 io_concurrency_cap() {
@@ -242,6 +310,14 @@ echo "=== Base URL:     $BASE_URL"
 echo "=== Model Path:   $MODEL_PATH"
 echo "=== Served Name:  $SERVED_MODEL_NAME"
 echo "=== Report Dir:   $RUN_DIR"
+if [[ "$CONC_GLOBAL_MODE" == "true" ]]; then
+  echo "=== Concurrency:  ${CONC_MAP_DESC} (global)"
+else
+  echo "=== Concurrency:  per-IO groups:"
+  for ((ci=0; ci<n_combos; ci++)); do
+    echo "===   ${io_combinations[$ci]} -> ${CONC_STRS[$ci]}"
+  done
+fi
 echo "=== output_len=1 (pure prefill, 0 decode) ==="
 echo "=== Seed:          $SEED"
 echo "=== Conc Multiplier: $CONCURRENCY_MULTIPLIER"
@@ -454,22 +530,28 @@ append_sglang_cache_report() {
   echo ">>> SGLang /metrics cache hit rate: ${rate}% (L1=${l1_rate}% L2=${l2_rate}% L3=${l3_rate}%, hits ${total_hit} / total ${total_all} tokens)"
 }
 
-for concurrency in "${concurrency_list[@]}"; do
-  # num_prompts = 并发数 × 并发倍数（默认 5，增加统计样本数，提高测量稳定性）
-  num_prompts=$((concurrency * CONCURRENCY_MULTIPLIER))
-  echo ""
-  echo "--- Concurrency=$concurrency, Num Prompts=$num_prompts ---"
+# 外层循环：遍历 IO 组合；内层循环：遍历该组合对应的并发档位（--concurrency 支持逐组指定）
+for combo_idx in "${!io_combinations[@]}"; do
+  combo="${io_combinations[$combo_idx]}"
+  input_len=$(echo "$combo" | awk '{print $1}')
+  output_len=$(echo "$combo" | awk '{print $2}')
 
-  for combo in "${io_combinations[@]}"; do
-    input_len=$(echo "$combo" | awk '{print $1}')
-    output_len=$(echo "$combo" | awk '{print $2}')
+  # 该 IO 组合对应的并发档位（-c 逐组映射，见构建区解析）
+  IFS=' ' read -ra combo_concurrency_list <<< "${CONC_STRS[$combo_idx]}"
 
-    # 并发档位上限：该组合超出上限档位时跳过（见 io_concurrency_cap）
-    conc_cap=$(io_concurrency_cap "$input_len")
+  # 并发档位上限：该组合超出上限档位时跳过（见 io_concurrency_cap）
+  conc_cap=$(io_concurrency_cap "$input_len")
+
+  for concurrency in "${combo_concurrency_list[@]}"; do
     if [[ "$concurrency" -gt "$conc_cap" ]]; then
       echo ">>> Skip: Input=$input_len, Concurrency=$concurrency > cap $conc_cap"
       continue
     fi
+
+    # num_prompts = 并发数 × 并发倍数（默认 5，增加统计样本数，提高测量稳定性）
+    num_prompts=$((concurrency * CONCURRENCY_MULTIPLIER))
+    echo ""
+    echo "--- Input=$input_len, Concurrency=$concurrency, Num Prompts=$num_prompts ---"
     log_file="${RUN_DIR}/prefill_bs-${concurrency}_input-${input_len}.log"
     jsonl_file="${RUN_DIR}/prefill_bs-${concurrency}_input-${input_len}.jsonl"
     echo ""
@@ -547,7 +629,7 @@ for concurrency in "${concurrency_list[@]}"; do
     echo "--- Finished Input=$input_len. Sleeping for $SLEEP_TIME seconds... ---"
     sleep "$SLEEP_TIME"
   done
-  echo "--- Completed all IO combinations for Concurrency=$concurrency ---"
+  echo "--- Completed all concurrency levels for IO=$combo ---"
 done
 
 echo ""
@@ -558,25 +640,40 @@ if [[ $FAIL_COUNT -gt 0 ]]; then
 fi
 
 # --- 构建 BENCH_COMMANDS（循环模板，变量占位，用于报告第三部分） ---
-CONC_LIST="${concurrency_list[*]}"
 IO_QUOTED=""
 for io in "${io_combinations[@]}"; do
   IO_QUOTED="${IO_QUOTED}\"$io\" "
 done
 IO_QUOTED="${IO_QUOTED% }"
 
+# 记录模板中的并发档位解析块（全局模式直接赋值；逐组模式用 case 匹配 IO 组合）
+CONC_CASE_BLOCK=""
+if [[ "$CONC_GLOBAL_MODE" == "true" ]]; then
+  CONC_CASE_BLOCK="  CONC_LIST=\"$(echo "${CONC_STRS[0]}" | tr ',' ' ')\""
+else
+  CONC_CASE_BLOCK="  case \"\$IO\" in"
+  for ((ci=0; ci<n_combos; ci++)); do
+    CONC_CASE_BLOCK="${CONC_CASE_BLOCK}
+    \"${io_combinations[$ci]}\") CONC_LIST=\"${CONC_STRS[$ci]}\" ;;"
+  done
+  CONC_CASE_BLOCK="${CONC_CASE_BLOCK}
+    *) CONC_LIST=\"$(echo "$DEFAULT_CONCURRENCY" | tr ',' ' ')\" ;;
+  esac"
+fi
+
 if [[ "$FRAMEWORK" == "sglang" ]]; then
-  BENCH_COMMANDS="# 并发数列表: ${CONCURRENCY_STR}
+  BENCH_COMMANDS="# 并发数映射: ${CONC_MAP_DESC}
 # 并发倍数: ${CONCURRENCY_MULTIPLIER}（num-prompts = 并发数 × 并发倍数）
 # IO 组合: ${IO_STR}
 # 并发档位按输入长度限上限: ≤64K 全档 / 128K~256K ≤64（超出自动跳过）
-for CONCURRENCY in ${CONC_LIST}; do
-  NUM_PROMPTS=\$((CONCURRENCY * ${CONCURRENCY_MULTIPLIER}))
-  for IO in ${IO_QUOTED}; do
-    INPUT_LEN=\$(echo \"\$IO\" | awk '{print \$1}')
-    OUTPUT_LEN=\$(echo \"\$IO\" | awk '{print \$2}')
-    CONC_CAP=\$(io_concurrency_cap \"\$INPUT_LEN\")
+for IO in ${IO_QUOTED}; do
+  INPUT_LEN=\$(echo \"\$IO\" | awk '{print \$1}')
+  OUTPUT_LEN=\$(echo \"\$IO\" | awk '{print \$2}')
+${CONC_CASE_BLOCK}
+  CONC_CAP=\$(io_concurrency_cap \"\$INPUT_LEN\")
+  for CONCURRENCY in \$CONC_LIST; do
     [[ \"\$CONCURRENCY\" -gt \"\$CONC_CAP\" ]] && continue
+    NUM_PROMPTS=\$((CONCURRENCY * ${CONCURRENCY_MULTIPLIER}))
     $PYTHON_CMD -m sglang.benchmark.serving \\
       --backend sglang-oai-chat \\
       --base-url \"\$BASE_URL\" \\
@@ -590,19 +687,21 @@ for CONCURRENCY in ${CONC_LIST}; do
       --max-concurrency \$CONCURRENCY \\
       --seed ${SEED}
   done
+  done
 done"
 elif [[ "$FRAMEWORK" == "vllm" ]]; then
-  BENCH_COMMANDS="# 并发数列表: ${CONCURRENCY_STR}
+  BENCH_COMMANDS="# 并发数映射: ${CONC_MAP_DESC}
 # 并发倍数: ${CONCURRENCY_MULTIPLIER}（num-prompts = 并发数 × 并发倍数）
 # IO 组合: ${IO_STR}
 # 并发档位按输入长度限上限: ≤64K 全档 / 128K~256K ≤64（超出自动跳过）
-for CONCURRENCY in ${CONC_LIST}; do
-  NUM_PROMPTS=\$((CONCURRENCY * ${CONCURRENCY_MULTIPLIER}))
-  for IO in ${IO_QUOTED}; do
-    INPUT_LEN=\$(echo \"\$IO\" | awk '{print \$1}')
-    OUTPUT_LEN=\$(echo \"\$IO\" | awk '{print \$2}')
-    CONC_CAP=\$(io_concurrency_cap \"\$INPUT_LEN\")
+for IO in ${IO_QUOTED}; do
+  INPUT_LEN=\$(echo \"\$IO\" | awk '{print \$1}')
+  OUTPUT_LEN=\$(echo \"\$IO\" | awk '{print \$2}')
+${CONC_CASE_BLOCK}
+  CONC_CAP=\$(io_concurrency_cap \"\$INPUT_LEN\")
+  for CONCURRENCY in \$CONC_LIST; do
     [[ \"\$CONCURRENCY\" -gt \"\$CONC_CAP\" ]] && continue
+    NUM_PROMPTS=\$((CONCURRENCY * ${CONCURRENCY_MULTIPLIER}))
     vllm bench serve \\
       --backend openai-chat \\
       --endpoint /v1/chat/completions \\
@@ -621,6 +720,7 @@ for CONCURRENCY in ${CONC_LIST}; do
       --seed ${SEED} \\
       --metric_percentiles 90,95,99 \\
       --ready-check-timeout-sec 30
+  done
   done
 done"
 fi

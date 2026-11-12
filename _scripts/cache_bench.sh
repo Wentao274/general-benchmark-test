@@ -53,6 +53,8 @@ PD=""
 DESCRIBE=""
 BACKGROUND=true
 TIMEOUT=3600
+CONCURRENCY_ARG=""
+IO_ARG=""
 
 # 缓存命中率（百分比），默认 90
 DEFAULT_CACHE_HIT_RATE=90
@@ -84,7 +86,11 @@ Usage: $0 -F <sglang|vllm> [OPTIONS]
 
 可选参数:
   -r, --report-dir DIR          报告输出目录        (default: ./{framework}_cache_reports)
-  -c, --concurrency LIST        并发数列表(逗号分隔) (default: $DEFAULT_CONCURRENCY)
+  -c, --concurrency LIST        并发档位。两种形式:
+                                 全局: 逗号分隔单档, 如 "1,8,32,64,128" (default: $DEFAULT_CONCURRENCY)
+                                 逐组: 组间逗号、组内空格, 与 -i IO组合从第一组起一一对应, 如 "1 8 32 64,1 8 32,1 8"
+                                   组数=1 全局 / 组数>组合数 舍弃多余组 / 组合数>组数 未匹配组合用默认
+                                   未传 -i 时只取第一组作全局
   -i, --io-combinations LIST    IO组合(逗号分隔,每组"in out") (default: $DEFAULT_IO)
   -g, --gsp-num-groups N        共享前缀组数(组内请求共享同一前缀,组间前缀不同) (default: 1)
                                   预热阶段每组发 1 条请求填前缀；测试请求总数 = 每组条数 × N，每组条数 = ceil(并发倍数×并发/N)
@@ -208,6 +214,32 @@ if ! [[ "$CONCURRENCY_MULTIPLIER" =~ ^[1-9][0-9]*$ ]]; then
   exit 1
 fi
 
+# --- 校验并发档位（-c 支持全局逗号列表或逐组指定：组间逗号、组内空格） ---
+__conc_raw="${CONCURRENCY_ARG:-$DEFAULT_CONCURRENCY}"
+if [[ "$__conc_raw" == *[[:space:]]* ]]; then
+  IFS=',' read -ra __conc_groups <<< "$__conc_raw"
+  for __grp in "${__conc_groups[@]}"; do
+    if [[ -z "$__grp" ]]; then
+      echo "ERROR: --concurrency 存在空的并发组（检查连续逗号），当前值: '$__conc_raw'" >&2
+      exit 1
+    fi
+    for __lvl in $__grp; do
+      if ! [[ "$__lvl" =~ ^[1-9][0-9]*$ ]]; then
+        echo "ERROR: --concurrency 并发档位 '$__lvl' 必须为 >=1 的整数，当前值: '$__conc_raw'" >&2
+        exit 1
+      fi
+    done
+  done
+else
+  IFS=',' read -ra __conc_levels <<< "$__conc_raw"
+  for __lvl in "${__conc_levels[@]}"; do
+    if [[ -z "$__lvl" ]] || ! [[ "$__lvl" =~ ^[1-9][0-9]*$ ]]; then
+      echo "ERROR: --concurrency 并发档位必须为 >=1 的整数（逗号分隔），当前值: '$__conc_raw'" >&2
+      exit 1
+    fi
+  done
+fi
+
 # --- 前置校验：serve_command.sh ---
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
@@ -264,9 +296,48 @@ if [[ "$BACKGROUND" == "true" ]]; then
   exit 0
 fi
 
-# --- 构建并发数列表 ---
+# --- 构建并发档位与 IO 组合映射 ---
+# -c 无空格: 全局档位列表（逗号分隔单档，向后兼容）
+# -c 含空格: 并发组（组间逗号、组内空格），与 IO 组合从第一组起一一对应：
+#   组数=1 → 全局适用；组数<组合数 → 未匹配组合用默认档位；组数>组合数 → 舍弃多余组
+#   未显式传 -i 时 → 只取第一组作为全局
 CONCURRENCY_STR="${CONCURRENCY_ARG:-$DEFAULT_CONCURRENCY}"
-IFS=',' read -ra concurrency_list <<< "$CONCURRENCY_STR"
+IO_STR="${IO_ARG:-$DEFAULT_IO}"
+IFS=',' read -ra io_combinations <<< "$IO_STR"
+
+n_combos=${#io_combinations[@]}
+CONC_GLOBAL_MODE=true
+CONC_MAP_DESC="全局 ${CONCURRENCY_STR}"
+declare -a CONC_STRS=()
+if [[ "$CONCURRENCY_STR" == *[[:space:]]* ]]; then
+  IFS=',' read -ra __conc_groups <<< "$CONCURRENCY_STR"
+  n_groups=${#__conc_groups[@]}
+  if [[ -z "$IO_ARG" ]] || [[ "$n_groups" -eq 1 ]]; then
+    for ((ci=0; ci<n_combos; ci++)); do
+      CONC_STRS[$ci]="${__conc_groups[0]}"
+    done
+    if [[ -z "$IO_ARG" ]]; then
+      CONC_MAP_DESC="全局 ${__conc_groups[0]}（未传 -i，取第一组）"
+    else
+      CONC_MAP_DESC="全局 ${__conc_groups[0]}（单组）"
+    fi
+  else
+    CONC_GLOBAL_MODE=false
+    CONC_MAP_DESC="按 IO 组合一一对应（组数>组合数舍弃多余，未匹配组合用默认 ${DEFAULT_CONCURRENCY}）"
+    for ((ci=0; ci<n_combos; ci++)); do
+      if [[ "$ci" -lt "$n_groups" ]]; then
+        CONC_STRS[$ci]="${__conc_groups[$ci]}"
+      else
+        CONC_STRS[$ci]="$(echo "$DEFAULT_CONCURRENCY" | tr ',' ' ')"
+      fi
+    done
+  fi
+else
+  __conc_flat="$(echo "$CONCURRENCY_STR" | tr ',' ' ')"
+  for ((ci=0; ci<n_combos; ci++)); do
+    CONC_STRS[$ci]="$__conc_flat"
+  done
+fi
 
 # --- 提取模型服务名最后一段（以 / \ 分割），并清除残留 : \，用于目录创建 ---
 safe_model_name=$(echo "$SERVED_MODEL_NAME" | sed 's/.*[\/\\]//; s/[:\\]//g')
@@ -278,10 +349,6 @@ RUN_TS=$(date +%Y%m%d_%H%M%S)
 RUN_DIR="$REPORT_DIR/${TESTER}/${safe_model_name}/${RUN_TS}"
 mkdir -p "$RUN_DIR"
 
-# --- 构建 IO 组合列表（每组 "输入 输出"） ---
-IO_STR="${IO_ARG:-$DEFAULT_IO}"
-IFS=',' read -ra io_combinations <<< "$IO_STR"
-
 echo "=========================================="
 echo "=== Starting ${BENCH_LABEL} Cache Hit Rate Benchmark ==="
 echo "=== Framework:      $FRAMEWORK"
@@ -289,7 +356,14 @@ echo "=== Base URL:       $BASE_URL"
 echo "=== Model Path:     $MODEL_PATH"
 echo "=== Served Name:    $SERVED_MODEL_NAME"
 echo "=== Report Dir:     $RUN_DIR"
-echo "=== Concurrency:    ${concurrency_list[*]}"
+if [[ "$CONC_GLOBAL_MODE" == "true" ]]; then
+  echo "=== Concurrency:    ${CONC_MAP_DESC} (global)"
+else
+  echo "=== Concurrency:    per-IO groups:"
+  for ((ci=0; ci<n_combos; ci++)); do
+    echo "===   ${io_combinations[$ci]} -> ${CONC_STRS[$ci]}"
+  done
+fi
 echo "=== IO Combinations: ${IO_STR}"
 echo "=== Cache Hit Rate: ${CACHE_HIT_RATE}% (prefix-level)"
 echo "=== GSP Groups:     $GSP_NUM_GROUPS (per group shares one prefix)"
@@ -521,20 +595,24 @@ append_sglang_cache_report() {
   echo ">>> SGLang /metrics cache hit rate: ${rate}% (L1=${l1_rate}% L2=${l2_rate}% L3=${l3_rate}%, hits ${total_hit} / total ${total_all} tokens)"
 }
 
-# --- 外层循环：遍历不同的并发值 ---
-for concurrency in "${concurrency_list[@]}"; do
-  # N_total = 测试阶段总请求数 = 并发倍数（默认 5）× 并发数（增加统计样本，提高测量稳定性）
-  # GSP_NUM_GROUPS > 1 时按组均摊（向上取整），实际总数 = 每组条数 × 组数
-  base_total=$(( concurrency * CONCURRENCY_MULTIPLIER ))
-  per_group_prompts=$(( (base_total + GSP_NUM_GROUPS - 1) / GSP_NUM_GROUPS ))
-  N_total=$(( per_group_prompts * GSP_NUM_GROUPS ))
+# --- 外层循环：遍历 IO 组合；内层循环：遍历该组合对应的并发档位（--concurrency 支持逐组指定） ---
+for combo_idx in "${!io_combinations[@]}"; do
+  combo="${io_combinations[$combo_idx]}"
+  input_len=$(echo "$combo" | awk '{print $1}')
+  output_len=$(echo "$combo" | awk '{print $2}')
+  # 前缀级命中参数（按该组合输入长度计算）
+  prefix_len=$(( input_len * CACHE_HIT_RATE / 100 ))
+  suffix_len=$(( input_len - prefix_len ))
 
-  for combo in "${io_combinations[@]}"; do
-    input_len=$(echo "$combo" | awk '{print $1}')
-    output_len=$(echo "$combo" | awk '{print $2}')
-    # 前缀级命中参数（按该组合输入长度计算）
-    prefix_len=$(( input_len * CACHE_HIT_RATE / 100 ))
-    suffix_len=$(( input_len - prefix_len ))
+  # 该 IO 组合对应的并发档位（-c 逐组映射，见构建区解析）
+  IFS=' ' read -ra combo_concurrency_list <<< "${CONC_STRS[$combo_idx]}"
+
+  for concurrency in "${combo_concurrency_list[@]}"; do
+    # N_total = 测试阶段总请求数 = 并发倍数（默认 5）× 并发数（增加统计样本，提高测量稳定性）
+    # GSP_NUM_GROUPS > 1 时按组均摊（向上取整），实际总数 = 每组条数 × 组数
+    base_total=$(( concurrency * CONCURRENCY_MULTIPLIER ))
+    per_group_prompts=$(( (base_total + GSP_NUM_GROUPS - 1) / GSP_NUM_GROUPS ))
+    N_total=$(( per_group_prompts * GSP_NUM_GROUPS ))
 
     echo ""
     echo "--- Configuration: Concurrency=$concurrency, Input=${input_len}, Output=${output_len}, N_total=$N_total ---"
@@ -717,15 +795,29 @@ if [[ $FAIL_COUNT -gt 0 ]]; then
 fi
 
 # --- 构建 BENCH_COMMANDS（循环模板，变量占位，用于报告第三部分） ---
-CONC_LIST="${concurrency_list[*]}"
 IO_QUOTED=""
 for io in "${io_combinations[@]}"; do
   IO_QUOTED="${IO_QUOTED}\"$io\" "
 done
 IO_QUOTED="${IO_QUOTED% }"
 
+# 记录模板中的并发档位解析块（全局模式直接赋值；逐组模式用 case 匹配 IO 组合）
+CONC_CASE_BLOCK=""
+if [[ "$CONC_GLOBAL_MODE" == "true" ]]; then
+  CONC_CASE_BLOCK="  CONC_LIST=\"$(echo "${CONC_STRS[0]}" | tr ',' ' ')\""
+else
+  CONC_CASE_BLOCK="  case \"\$IO\" in"
+  for ((ci=0; ci<n_combos; ci++)); do
+    CONC_CASE_BLOCK="${CONC_CASE_BLOCK}
+    \"${io_combinations[$ci]}\") CONC_LIST=\"${CONC_STRS[$ci]}\" ;;"
+  done
+  CONC_CASE_BLOCK="${CONC_CASE_BLOCK}
+    *) CONC_LIST=\"$(echo "$DEFAULT_CONCURRENCY" | tr ',' ' ')\" ;;
+  esac"
+fi
+
 if [[ "$FRAMEWORK" == "sglang" ]]; then
-  BENCH_COMMANDS="# 并发数列表: ${CONCURRENCY_STR}
+  BENCH_COMMANDS="# 并发数映射: ${CONC_MAP_DESC}
 # IO 组合: ${IO_STR}
 # 缓存命中率: ${CACHE_HIT_RATE}% (前缀级)
 # 共享前缀组数: ${GSP_NUM_GROUPS}（组内请求共享该组前缀，组间不同）
@@ -734,14 +826,15 @@ if [[ "$FRAMEWORK" == "sglang" ]]; then
 # 方法: 两阶段（预热+测试）
 #   阶段1 预热: 每组 1 个请求填该组共享前缀入缓存（共 ${GSP_NUM_GROUPS} 组，不计量）
 #   阶段2 测试: N_total = ${CONCURRENCY_MULTIPLIER}×并发 个请求（每组条数向上取整），每个请求前缀命中+后缀未命中
-for CONCURRENCY in ${CONC_LIST}; do
-  PER_GROUP=\$(( (CONCURRENCY * ${CONCURRENCY_MULTIPLIER} + ${GSP_NUM_GROUPS} - 1) / ${GSP_NUM_GROUPS} ))
-  N_TOTAL=\$((PER_GROUP * ${GSP_NUM_GROUPS}))
-  for IO in ${IO_QUOTED}; do
+for IO in ${IO_QUOTED}; do
   INPUT_LEN=\$(echo \"\$IO\" | awk '{print \$1}')
   OUTPUT_LEN=\$(echo \"\$IO\" | awk '{print \$2}')
   PREFIX_LEN=\$(( INPUT_LEN * ${CACHE_HIT_RATE} / 100 ))
   SUFFIX_LEN=\$(( INPUT_LEN - PREFIX_LEN ))
+${CONC_CASE_BLOCK}
+  for CONCURRENCY in \$CONC_LIST; do
+    PER_GROUP=\$(( (CONCURRENCY * ${CONCURRENCY_MULTIPLIER} + ${GSP_NUM_GROUPS} - 1) / ${GSP_NUM_GROUPS} ))
+    N_TOTAL=\$((PER_GROUP * ${GSP_NUM_GROUPS}))
   # 阶段1: 预热（串行，填缓存）
     $PYTHON_CMD -m sglang.benchmark.serving \\
     --backend sglang-oai-chat \\
@@ -776,9 +869,10 @@ for CONCURRENCY in ${CONC_LIST}; do
     --cache-report \\
     --output-file \$JSONL_FILE
   done
+  done
 done"
 elif [[ "$FRAMEWORK" == "vllm" ]]; then
-  BENCH_COMMANDS="# 并发数列表: ${CONCURRENCY_STR}
+  BENCH_COMMANDS="# 并发数映射: ${CONC_MAP_DESC}
 # IO 组合: ${IO_STR}
 # 缓存命中率: ${CACHE_HIT_RATE}% (前缀级)
 # 共享前缀组数: ${GSP_NUM_GROUPS}（组内请求共享该组前缀，组间不同）
@@ -787,14 +881,15 @@ elif [[ "$FRAMEWORK" == "vllm" ]]; then
 # 方法: 两阶段（预热+测试）
 #   阶段1 预热: 每组 1 个请求填该组共享前缀入缓存（共 ${GSP_NUM_GROUPS} 组，不计量）
 #   阶段2 测试: N_total = ${CONCURRENCY_MULTIPLIER}×并发 个请求（每组条数向上取整），每个请求前缀命中+后缀未命中
-for CONCURRENCY in ${CONC_LIST}; do
-  PER_GROUP=\$(( (CONCURRENCY * ${CONCURRENCY_MULTIPLIER} + ${GSP_NUM_GROUPS} - 1) / ${GSP_NUM_GROUPS} ))
-  N_TOTAL=\$((PER_GROUP * ${GSP_NUM_GROUPS}))
-  for IO in ${IO_QUOTED}; do
+for IO in ${IO_QUOTED}; do
   INPUT_LEN=\$(echo \"\$IO\" | awk '{print \$1}')
   OUTPUT_LEN=\$(echo \"\$IO\" | awk '{print \$2}')
   PREFIX_LEN=\$(( INPUT_LEN * ${CACHE_HIT_RATE} / 100 ))
   SUFFIX_LEN=\$(( INPUT_LEN - PREFIX_LEN ))
+${CONC_CASE_BLOCK}
+  for CONCURRENCY in \$CONC_LIST; do
+    PER_GROUP=\$(( (CONCURRENCY * ${CONCURRENCY_MULTIPLIER} + ${GSP_NUM_GROUPS} - 1) / ${GSP_NUM_GROUPS} ))
+    N_TOTAL=\$((PER_GROUP * ${GSP_NUM_GROUPS}))
   # 阶段1: 预热（串行，填缓存）
   vllm bench serve \\
     --backend openai-chat \\
@@ -833,6 +928,7 @@ for CONCURRENCY in ${CONC_LIST}; do
     --seed ${SEED} \\
     --metric_percentiles 90,95,99 \\
     --ready-check-timeout-sec 30
+  done
   done
 done"
 fi

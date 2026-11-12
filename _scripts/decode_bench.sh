@@ -41,6 +41,9 @@ PD=""
 DESCRIBE=""
 BACKGROUND=true
 TIMEOUT=3600
+CONCURRENCY_ARG=""
+PREFIX_LENS_ARG=""
+OUTPUT_LENS_ARG=""
 
 # 前缀长度列表（模拟 KV cache 已就位的上下文长度）
 DEFAULT_PREFIX_LENS="8192,32768,65536,131072,262144"
@@ -75,7 +78,11 @@ Usage: $0 -F <sglang|vllm> [OPTIONS]
   -r, --report-dir DIR          报告输出目录        (default: ./{framework}_decode_reports)
   -p, --prefix-lens LIST        前缀长度列表(逗号分隔) (default: $DEFAULT_PREFIX_LENS)
   -o, --output-lens LIST        输出长度列表(逗号分隔;缺省按前缀组配对: <=64K->512, 128K~256K->1024)
-  -c, --concurrency LIST        并发数列表(逗号分隔) (default: $DEFAULT_CONCURRENCY)
+  -c, --concurrency LIST        并发档位。两种形式:
+                                 全局: 逗号分隔单档, 如 "1,8,32,64,128" (default: $DEFAULT_CONCURRENCY)
+                                 逐组: 组间逗号、组内空格, 与 -p 前缀组从第一组起一一对应, 如 "1 8 32 64,1 8 32,1 8"
+                                   组数=1 全局 / 组数>前缀组数 舍弃多余组 / 前缀组数>组数 未匹配前缀组用默认
+                                   未传 -p 时只取第一组作全局
   -g, --gsp-num-groups N        共享前缀组数(组内请求共享同一前缀,组间前缀不同) (default: 1)
                                   请求总数 = 每组条数 × N，每组条数 = ceil(并发倍数×并发/N)
   --seed N                      随机数据集种子    (default: $SEED)
@@ -187,6 +194,32 @@ if ! [[ "$CONCURRENCY_MULTIPLIER" =~ ^[1-9][0-9]*$ ]]; then
   exit 1
 fi
 
+# --- 校验并发档位（-c 支持全局逗号列表或逐组指定：组间逗号、组内空格） ---
+__conc_raw="${CONCURRENCY_ARG:-$DEFAULT_CONCURRENCY}"
+if [[ "$__conc_raw" == *[[:space:]]* ]]; then
+  IFS=',' read -ra __conc_groups <<< "$__conc_raw"
+  for __grp in "${__conc_groups[@]}"; do
+    if [[ -z "$__grp" ]]; then
+      echo "ERROR: --concurrency 存在空的并发组（检查连续逗号），当前值: '$__conc_raw'" >&2
+      exit 1
+    fi
+    for __lvl in $__grp; do
+      if ! [[ "$__lvl" =~ ^[1-9][0-9]*$ ]]; then
+        echo "ERROR: --concurrency 并发档位 '$__lvl' 必须为 >=1 的整数，当前值: '$__conc_raw'" >&2
+        exit 1
+      fi
+    done
+  done
+else
+  IFS=',' read -ra __conc_levels <<< "$__conc_raw"
+  for __lvl in "${__conc_levels[@]}"; do
+    if [[ -z "$__lvl" ]] || ! [[ "$__lvl" =~ ^[1-9][0-9]*$ ]]; then
+      echo "ERROR: --concurrency 并发档位必须为 >=1 的整数（逗号分隔），当前值: '$__conc_raw'" >&2
+      exit 1
+    fi
+  done
+fi
+
 # --- 前置校验：serve_command.sh ---
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
@@ -250,7 +283,45 @@ OUTPUT_LENS_STR="${OUTPUT_LENS_ARG:-$DEFAULT_OUTPUT_LENS}"
 CONCURRENCY_STR="${CONCURRENCY_ARG:-$DEFAULT_CONCURRENCY}"
 IFS=',' read -ra prefix_lens <<< "$PREFIX_LENS_STR"
 IFS=',' read -ra output_lens <<< "$OUTPUT_LENS_STR"
-IFS=',' read -ra concurrency_list <<< "$CONCURRENCY_STR"
+
+# --- 构建并发档位与前缀组映射 ---
+# -c 无空格: 全局档位列表（逗号分隔单档，向后兼容）
+# -c 含空格: 并发组（组间逗号、组内空格），与 -p 前缀组从第一组起一一对应：
+#   组数=1 → 全局适用；组数<前缀组数 → 未匹配前缀组用默认档位；组数>前缀组数 → 舍弃多余组
+#   未显式传 -p 时 → 只取第一组作为全局
+n_combos=${#prefix_lens[@]}
+CONC_GLOBAL_MODE=true
+CONC_MAP_DESC="全局 ${CONCURRENCY_STR}"
+declare -a CONC_STRS=()
+if [[ "$CONCURRENCY_STR" == *[[:space:]]* ]]; then
+  IFS=',' read -ra __conc_groups <<< "$CONCURRENCY_STR"
+  n_groups=${#__conc_groups[@]}
+  if [[ -z "$PREFIX_LENS_ARG" ]] || [[ "$n_groups" -eq 1 ]]; then
+    for ((ci=0; ci<n_combos; ci++)); do
+      CONC_STRS[$ci]="${__conc_groups[0]}"
+    done
+    if [[ -z "$PREFIX_LENS_ARG" ]]; then
+      CONC_MAP_DESC="全局 ${__conc_groups[0]}（未传 -p，取第一组）"
+    else
+      CONC_MAP_DESC="全局 ${__conc_groups[0]}（单组）"
+    fi
+  else
+    CONC_GLOBAL_MODE=false
+    CONC_MAP_DESC="按前缀组一一对应（组数>前缀组数舍弃多余，未匹配前缀组用默认 ${DEFAULT_CONCURRENCY}）"
+    for ((ci=0; ci<n_combos; ci++)); do
+      if [[ "$ci" -lt "$n_groups" ]]; then
+        CONC_STRS[$ci]="${__conc_groups[$ci]}"
+      else
+        CONC_STRS[$ci]="$(echo "$DEFAULT_CONCURRENCY" | tr ',' ' ')"
+      fi
+    done
+  fi
+else
+  __conc_flat="$(echo "$CONCURRENCY_STR" | tr ',' ' ')"
+  for ((ci=0; ci<n_combos; ci++)); do
+    CONC_STRS[$ci]="$__conc_flat"
+  done
+fi
 
 safe_model_name=$(echo "$SERVED_MODEL_NAME" | sed 's/.*[\/\\]//; s/[:\\]//g')
 
@@ -274,7 +345,14 @@ if [[ -n "$OUTPUT_LENS_ARG" ]]; then
 else
   echo "=== Output Lens:   512 (prefix<=64K) / 1024 (prefix>64K) [paired per prefix]"
 fi
-echo "=== Concurrency:  ${concurrency_list[*]}"
+if [[ "$CONC_GLOBAL_MODE" == "true" ]]; then
+  echo "=== Concurrency:  ${CONC_MAP_DESC} (global)"
+else
+  echo "=== Concurrency:  per-prefix groups:"
+  for ((ci=0; ci<n_combos; ci++)); do
+    echo "===   prefix ${prefix_lens[$ci]} -> ${CONC_STRS[$ci]}"
+  done
+fi
 echo "=== GSP Groups:   $GSP_NUM_GROUPS (per group shares one prefix)"
 echo "=== Seed:          $SEED"
 echo "=== Conc Multiplier: $CONCURRENCY_MULTIPLIER"
@@ -493,7 +571,8 @@ append_sglang_cache_report() {
   echo ">>> SGLang /metrics cache hit rate: ${rate}% (L1=${l1_rate}% L2=${l2_rate}% L3=${l3_rate}%, hits ${total_hit} / total ${total_all} tokens)"
 }
 
-for prefix_len in "${prefix_lens[@]}"; do
+for prefix_idx in "${!prefix_lens[@]}"; do
+  prefix_len="${prefix_lens[$prefix_idx]}"
   if [[ -n "$OUTPUT_LENS_ARG" ]]; then
     # 用户显式指定 -o：前缀 × 输出全交叉
     eff_output_lens=("${output_lens[@]}")
@@ -506,7 +585,9 @@ for prefix_len in "${prefix_lens[@]}"; do
     fi
   fi
   for output_len in "${eff_output_lens[@]}"; do
-    for concurrency in "${concurrency_list[@]}"; do
+    # 该前缀组对应的并发档位（-c 逐组映射，见构建区解析）
+    IFS=' ' read -ra prefix_concurrency_list <<< "${CONC_STRS[$prefix_idx]}"
+    for concurrency in "${prefix_concurrency_list[@]}"; do
       # num_prompts = 并发倍数（默认 10）× 并发数，增加统计样本数，提高测量稳定性
       # GSP_NUM_GROUPS > 1 时按组均摊（向上取整），实际总数 = 每组条数 × 组数
       base_prompts=$((concurrency * CONCURRENCY_MULTIPLIER))
@@ -608,7 +689,21 @@ fi
 # --- 构建 BENCH_COMMANDS（循环模板，变量占位，用于报告第三部分） ---
 PREFIX_LIST="${prefix_lens[*]}"
 OUTPUT_LIST="${output_lens[*]}"
-CONC_LIST="${concurrency_list[*]}"
+
+# 记录模板中的并发档位解析块（全局模式直接赋值；逐组模式用 case 匹配前缀组）
+CONC_CASE_BLOCK=""
+if [[ "$CONC_GLOBAL_MODE" == "true" ]]; then
+  CONC_CASE_BLOCK="  CONC_LIST=\"$(echo "${CONC_STRS[0]}" | tr ',' ' ')\""
+else
+  CONC_CASE_BLOCK="  case \"\$PREFIX_LEN\" in"
+  for ((ci=0; ci<n_combos; ci++)); do
+    CONC_CASE_BLOCK="${CONC_CASE_BLOCK}
+    ${prefix_lens[$ci]}) CONC_LIST=\"${CONC_STRS[$ci]}\" ;;"
+  done
+  CONC_CASE_BLOCK="${CONC_CASE_BLOCK}
+    *) CONC_LIST=\"$(echo "$DEFAULT_CONCURRENCY" | tr ',' ' ')\" ;;
+  esac"
+fi
 if [[ -n "$OUTPUT_LENS_ARG" ]]; then
   OUT_HDR="# 输出长度列表: ${OUTPUT_LENS_STR}"
   OUT_OPEN="  for OUTPUT_LEN in ${OUTPUT_LIST}; do"
@@ -623,12 +718,13 @@ fi
 if [[ "$FRAMEWORK" == "sglang" ]]; then
   BENCH_COMMANDS="# 前缀长度列表: ${PREFIX_LENS_STR}
 ${OUT_HDR}
-# 并发数列表: ${CONCURRENCY_STR}
+# 并发数映射: ${CONC_MAP_DESC}
 # 共享前缀组数: ${GSP_NUM_GROUPS}（组内请求共享同一前缀，组间不同；每组条数向上取整）
 # 并发倍数: ${CONCURRENCY_MULTIPLIER}（请求总数 = 每组条数 × 组数，每组条数 = ceil(并发倍数×并发/组数)）
 for PREFIX_LEN in ${PREFIX_LIST}; do
 ${OUT_OPEN}
-    for CONCURRENCY in ${CONC_LIST}; do
+${CONC_CASE_BLOCK}
+    for CONCURRENCY in \$CONC_LIST; do
       PER_GROUP=\$(( (CONCURRENCY * ${CONCURRENCY_MULTIPLIER} + ${GSP_NUM_GROUPS} - 1) / ${GSP_NUM_GROUPS} ))
       NUM_PROMPTS=\$((PER_GROUP * ${GSP_NUM_GROUPS}))
       $PYTHON_CMD -m sglang.benchmark.serving \\
@@ -651,12 +747,13 @@ done"
 elif [[ "$FRAMEWORK" == "vllm" ]]; then
   BENCH_COMMANDS="# 前缀长度列表: ${PREFIX_LENS_STR}
 ${OUT_HDR}
-# 并发数列表: ${CONCURRENCY_STR}
+# 并发数映射: ${CONC_MAP_DESC}
 # 共享前缀组数: ${GSP_NUM_GROUPS}（组内请求共享同一前缀，组间不同）
 # 并发倍数: ${CONCURRENCY_MULTIPLIER}（请求总数 = 每组条数 × 组数，每组条数 = ceil(并发倍数×并发/组数)）
 for PREFIX_LEN in ${PREFIX_LIST}; do
 ${OUT_OPEN}
-    for CONCURRENCY in ${CONC_LIST}; do
+${CONC_CASE_BLOCK}
+    for CONCURRENCY in \$CONC_LIST; do
       PER_GROUP=\$(( (CONCURRENCY * ${CONCURRENCY_MULTIPLIER} + ${GSP_NUM_GROUPS} - 1) / ${GSP_NUM_GROUPS} ))
       NUM_PROMPTS=\$((PER_GROUP * ${GSP_NUM_GROUPS}))
       vllm bench serve \\
