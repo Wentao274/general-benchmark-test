@@ -28,6 +28,14 @@
   - [3.4 测试参数](#34-测试参数)
   - [3.5 测试脚本](#35-测试脚本)
   - [3.6 测试结果表](#36-测试结果表)
+- [第 4 章 随机 seed 冷测试变体](#第-4-章-随机-seed-冷测试变体)
+  - [4.1 背景：固定 seed 的两条 100% 命中路径](#41-背景固定-seed-的两条-100-命中路径)
+  - [4.2 变体脚本与差异](#42-变体脚本与差异)
+  - [4.3 使用方法](#43-使用方法)
+- [第 5 章 DP 均衡测试变体](#第-5-章-dp-均衡测试变体)
+  - [5.1 背景：DP 路由导致的不均衡](#51-背景dp-路由导致的不均衡)
+  - [5.2 发送协议与脚本差异](#52-发送协议与脚本差异)
+  - [5.3 使用方法与路由模式选择](#53-使用方法与路由模式选择)
 - [附录：文件清单](#附录文件清单)
 
 ---
@@ -1753,6 +1761,8 @@ vllm bench serve \
 > 每组首请求为 prefill 冷启动（组内其余请求命中），多组更接近多租户共享场景。
 > 设为 10 倍并发数是为了增加统计样本、让服务端经历"满并发 slot → 请求完成 → 新请求补入"
 > 的动态过程，更接近稳态负载。若需流式 SSE 精确测量 TTFT/TPOT，可使用下方 HTTP 脚本。
+> **DP ≥ 2 部署提示**：上游工具的数据集按组块顺序生成 + 滑窗提交，在飞窗口内前缀集中，
+> 同前缀请求会被 DP 路由聚到少数 rank——此时请使用 DP 均衡变体 `decode_dp_bench.sh`（见第 5 章）。
 
 #### 2.3.5 测试脚本（HTTP 精确测量）
 
@@ -2138,6 +2148,118 @@ vllm bench serve \
 > 命中率越高，每请求 prefill 量越少，TTFT 越低且分布均匀。
 > 若实测值与指定值差异大，需检查服务端缓存配置（如 hierarchical cache 是否影响统计）。
 
+> **DP ≥ 2 部署提示**：多组共享前缀（`-g > 1`）在 DP 路由下会集中到少数 rank（缓存命中与
+> 负载均失衡），此时请使用 DP 均衡变体 `cache_dp_bench.sh`（见第 5 章）：两阶段改为
+> "DP 轮转预热 + 均衡测试"，前缀级命中语义不变。
+
+---
+
+## 第 4 章 随机 seed 冷测试变体
+
+### 4.1 背景：固定 seed 的两条 100% 命中路径
+
+第 1/2 章测试使用随机数据集（`random-ids` / `random`），数据集内容由 `f(seed, input_len, output_len)` 完全确定——seed 固定为默认值 `123` 时，存在两条跨轮次的内容重放路径：
+
+1. **同输入长度跨并发档重放**：同一 IO 组合的各并发档位使用完全相同的数据集（内容逐 token 相同），若服务端前缀缓存未关闭，低并发档位预热后高并发档位大量命中
+2. **脚本重跑 100% 重放**：每次重跑测试都生成同一数据集，历史轮次残留的缓存全部命中
+
+服务端配置正确（关闭前缀缓存）时以上路径无影响；但实测中存在"缓存未关干净"的场景，此时吞吐数据被命中污染。随机 seed 变体从数据源头消除这两条路径。
+
+### 4.2 变体脚本与差异
+
+`_scripts/bench_random_seed.sh`（对应 `bench.sh`）与 `_scripts/prefill_bench_random_seed.sh`（对应 `prefill_bench.sh`）为原脚本的完整副本 + 最小差异：**每轮性能测试自动生成不重复的随机 seed**（本次运行内严格不重样，30-bit 非负整数；随机源启动时由 `时间^PID` 重播，跨运行不撞）。
+
+| 差异点 | 原脚本 | 随机 seed 变体 |
+|---|---|---|
+| `--seed` 参数 | 支持（默认 `123`） | 不支持，传入直接报错退出 |
+| 每轮数据集 | 固定 seed → 各轮内容相同 | 每轮随机 seed → 各轮内容不同（冷测试） |
+| 主日志 Seed 行 | `=== Seed: 123` | `=== Seed: 每轮随机`，每轮追加 `>>> Round seed: N` |
+| 默认报告目录 | `{framework}_reports` / `{framework}_prefill_reports` | `{framework}_bench_random_seed_reports` / `{framework}_prefill_random_seed_reports` |
+| 日志前缀 | `sglang_bench` / `sglang_prefill` 等 | `sglang_bench_random_seed` / `sglang_prefill_random_seed` 等 |
+| 报告标题 | 基础 Benchmark 测试 / 纯 Prefill 测试 | 追加"（随机 seed）"后缀 |
+| 其余（参数、逐组并发 `-c`、缓存命中率实测、容错超时、产物流程） | — | 与原脚本完全一致 |
+
+说明：
+
+- **可复现**：每轮实际 seed 记录在主日志 `>>> Round seed: N` 行，需复现该轮数据集时，将该 seed 传给**原脚本**的 `--seed N` 即可
+- **不提供随机 seed 变体的脚本**：`decode_bench.sh` 与 `cache_bench.sh` 依赖相同 seed 复现共享前缀（纯 Decode 依赖同批请求共享前缀、缓存命中率测试的前后对比依赖相同输入），每轮换 seed 会破坏测试语义。两者提供的是 **DP 均衡变体**（见第 5 章）：数据构造由 `dp_bench.py` 自控、seed 固定，不受此限制
+- 变体脚本不嵌入本文档（与原脚本仅 seed 注入差异），完整内容见 `_scripts/` 下对应 `_random_seed` 文件
+
+### 4.3 使用方法
+
+```bash
+# 基础 Benchmark（参数与 bench.sh 完全一致，仅脚本名与报告目录不同）
+./_scripts/bench_random_seed.sh -F sglang -u http://127.0.0.1:8080 -m /data/model -n model-name \
+  -t H100 -T zhangsan -P agg
+
+# 纯 Prefill（参数与 prefill_bench.sh 完全一致）
+./_scripts/prefill_bench_random_seed.sh -F vllm -u http://127.0.0.1:8080 -m /data/model -n model-name \
+  -t H100 -T zhangsan -P agg -i "65536 1,131072 1" -c "1 4,2 8"
+```
+
+---
+
+## 第 5 章 DP 均衡测试变体
+
+`_scripts/decode_dp_bench.sh`（对应 `decode_bench.sh`）与 `_scripts/cache_dp_bench.sh`（对应 `cache_bench.sh`），执行核心为自研客户端 `_scripts/dp_bench.py`（OpenAI 兼容 `/v1/completions` + token id 级 prompt，HTTP 底座同 `decode_http_sweep.py`），不使用上游 bench 工具。
+
+### 5.1 背景：DP 路由导致的不均衡
+
+DP ≥ 2 的数据并行部署（组内 TP 任意，如 TP=1/DP=8、TP=2/DP=4）下，纯 Decode / 缓存命中率测试用 `-g 8` 生成 8 个不同共享前缀，期望请求分摊到 8 个 DP rank。但上游工具的数据集按"组块顺序"生成（组 0 的全部请求 → 组 1 的全部请求 → …），滑窗并发提交下**在飞窗口内前缀高度集中**；服务端 DP 路由（round_robin / 最短队列 / 缓存亲和）把同前缀请求聚到少数 rank——DP 严重不均衡（并发 8、组数 8 时经常 8 个请求全落同一 rank）。上游工具无顺序/批次/交错参数可传，客户端也无法指定 rank，不均衡无法通过现有参数消除。
+
+DP = 1 部署（如 TP=8/DP=1）无路由不均衡问题，无需本变体。
+
+**PD 分离部署（多 P 多 D，`-P disagg`）的适用边界**：本变体作为负载整形器照常可用——每层每组一条 + 滑窗把不同前缀摊到多个 P 实例，避免 prefill 堆在一个 P（P 池路由 round_robin → `rotate` + `--dp-size`=P 实例数；前缀亲和 → `affinity` + `--no-dp-shuffle`）。但 **D 池放置由服务端 KV 迁移/调度决定，客户端无法整形**；分离架构下前缀缓存计数器在 P 实例的 /metrics 上，router 未必聚合 → 命中率实测可能读 N/A（可选字段，不影响执行）；TTFT 含 P 排队+prefill+KV 迁移+D 排队、TPOT 为纯 D 解码，本变体不拆分组件指标。PD 场景属设计级推论，未在 E2E 中实测。
+
+### 5.2 发送协议与脚本差异
+
+dp_bench.py 把"请求组合 + 提交顺序 + 批节奏"完全接管，两阶段由 wrapper 分别调用（服务端 `/metrics` 计数器在两阶段之间快照，实测命中率只统计测试阶段）：
+
+| 阶段 | 模式 | 行为 |
+|---|---|---|
+| 阶段 1 轮转预热（不计量） | `rotate`（默认） | `--dp-size` 轮 × 每组 1 条，第 r 轮组序为 `[(g+r)%G]` 逐轮轮转 → round_robin 分派下每 rank 把 G 个前缀各缓存一遍 |
+| | `affinity` | 只发 G 条（每组 1 条，固定组序 [0..G-1]），适用于前缀亲和路由（同前缀永远同 rank） |
+| 阶段 2 均衡测试（计量） | `refill`（默认） | 层交错序列（第 l 层 = 每组第 l 条，层内组序以 `Random(seed+l*7919+13)` 打乱）+ 滑窗补位：完成一个立刻补一个，持续并发、请求流不中断 |
+| | `barrier` | 每批从每组各取 `k = max(1, 并发/组数)` 条，批内并发提交、等全部完成再发下一批（批 barrier），批间打乱组序；批间有周转间隙与批尾等待，用于验证每批组成 |
+
+- 每请求 = 组 g 共享前缀（`Random(seed+g)` 确定性生成）+ 每请求唯一后缀（测试：`Random(seed+g*1000003+idx)`；decode 后缀 1 token，cache 后缀 = 输入×未命中率；warmup 后缀走独立种子段 `+777000000+r`，与测试不重复）
+- **压测口径**：refill 为默认——与上游工具相同的滑窗持续并发语义（吞吐口径可比、请求流不中断）；barrier 为可选验证口径（批间隙使吞吐略被低估）。滑窗在请求完成时间高度同步时存在波动边界的瞬时过零（毫秒级，上游工具同样存在），非中断
+- **DP rank 空转**：并发 ≥ 组数时任意时刻每组在飞 ≥1 条（窗口 = 层交错序列的连续段，C=8,G=8 恒为每组 1 条；C=40,G=8 恒为每组 5 条）→ 各 rank 不空转；并发 < 组数时部分 rank 空转不可避免（建议并发 ≥ 组数且为组数整数倍）；显式 barrier 且并发 < 组数自动回退 refill
+- 指标输出与 `collect_results.py` 解析规则逐行兼容；warmup 日志命名带 `_warmup` 后缀不参与 CSV 解析；测试日志额外附 DP Balance Audit（send_mode / groups / dp_size / shuffle / warmup_mode + 批/层组序）
+
+| 差异点 | 原脚本 | DP 均衡变体 |
+|---|---|---|
+| 执行核心 | 上游 `sglang.benchmark.serving` / `vllm bench serve` | 自研 `dp_bench.py`（两阶段驱动） |
+| 请求顺序 | 组块顺序 + 滑窗 | 每批每组一条 + 批 barrier + 批间打乱组序 |
+| 预热 | —（decode 无；cache 阶段1 逐组单发） | `--dp-size` 轮转预热 / affinity 单轮 G 条 |
+| 新增参数 | — | `--dp-size`（默认 8）/ `--dp-send-mode`（barrier/refill，默认 refill）/ `--dp-warmup-mode`（rotate/affinity，默认 rotate）/ `--no-dp-shuffle` / `--vocab-size`（默认 151552） |
+| 默认报告目录 | `{framework}_decode_reports` / `{framework}_cache_reports` | `{framework}_decode_dp_reports` / `{framework}_cache_dp_reports` |
+| 日志前缀 | `sglang_decode` / `sglang_cache` 等 | `sglang_decode_dp` / `sglang_cache_dp` 等 |
+| 报告标题 | 纯 Decode 测试 / 指定缓存命中率测试 | 追加"（DP 均衡）"后缀 |
+| 其余（`-g` 组数、逐组并发 `-c`、并发倍数、命中率实测、容错超时、产物流程） | — | 与原脚本完全一致（`-c` 同规则逐组映射：decode 按前缀组、cache 按 IO 组合一一对应） |
+
+### 5.3 使用方法与路由模式选择
+
+按服务端 DP 路由模式选择参数（**关键**）：
+
+| 服务端 DP 路由 | 预热模式 | 批间打乱 | 说明 |
+|---|---|---|---|
+| round_robin / 最短队列 | `--dp-warmup-mode rotate`（默认） | `--dp-shuffle` 开（默认） | 转预热让每 rank 缓存全部 G 个前缀，批间打乱不破坏命中 |
+| 前缀亲和（同前缀永远同 rank） | `--dp-warmup-mode affinity` | **必须 `--no-dp-shuffle`** | 脚本强制校验：affinity + shuffle 组合直接报错退出（打乱组序会破坏前缀→rank 亲和导致缓存 miss） |
+
+```bash
+# 纯 Decode（DP=8，组内 TP 任意，8 组共享前缀，每批 8 条一组一条、批间打乱）
+./_scripts/decode_dp_bench.sh -F sglang -u http://127.0.0.1:8080 -m /data/model -n model-name \
+  -t H100 -T zhangsan -P agg -g 8 --dp-size 8 -p 65536,131072 -o 512,1024 -c 8,32
+
+# 指定缓存命中率（前缀亲和路由：affinity + 关打乱）
+./_scripts/cache_dp_bench.sh -F vllm -u http://127.0.0.1:8080 -m /data/model -n model-name \
+  -t H100 -T zhangsan -P agg -g 8 --dp-size 8 --dp-warmup-mode affinity --no-dp-shuffle \
+  -i "65536 512,131072 1024" -R 90 -c 8
+```
+
+E2E 验证（126/126 断言，假 OpenAI SSE 服务器 + 真 `collect_results.py` / `csv_to_md.py` 流水线）：滑窗连续性（并发上限、满窗、全组上线、无持续空转、组配额均等）、批组成（每批每组恰一条）、批 barrier 时序、批间打乱、rotate 轮转预热、affinity 单轮、refill 回退并发上限、5 类参数校验拒绝 + affinity/shuffle 冲突守卫、两 wrapper 全流水线（CSV / MD / 报告目录 / 标题（DP 均衡）/ nohup 后台）、cache 前缀/后缀切分与 warmup-测试后缀不相交、`-c` 逐组映射（多 IO 组合各自档位、每档位独立 warmup 与组配额、服务器侧按组合分别校验滑窗）。
+
 ---
 
 ## 附录：文件清单
@@ -2145,14 +2267,19 @@ vllm bench serve \
 ```
 general-benchmark-test/
 ├── Model_Inference_Benchmark_TestStrategy.md   本文档
-├── README.md                                   快速参考指南（四种测试对比、执行命令、参数说明）
+├── README.md                                   快速参考指南（四种测试对比及其变体、执行命令、参数说明）
 ├── benchmark_analysis_template.md              Markdown 报告模板
 ├── serve_command.sh.template                  模型服务启动命令模板（需复制为 serve_command.sh 填写真实命令）
 └── _scripts/
     ├── bench.sh                                第1章 benchmark 脚本（统一，-F 指定 sglang/vllm）
+    ├── bench_random_seed.sh                    第4章 bench.sh 随机 seed 冷测试变体（每轮自动换随机 seed）
     ├── prefill_bench.sh                        第2章 纯 Prefill 脚本（统一，-F 指定 sglang/vllm）
+    ├── prefill_bench_random_seed.sh            第4章 prefill_bench.sh 随机 seed 冷测试变体（每轮自动换随机 seed）
     ├── decode_bench.sh                         第2章 纯 Decode 脚本（统一，SGLang 用 GSP / vLLM 用 prefix_repetition）
     ├── cache_bench.sh                          第3章 指定缓存命中率脚本（前缀级命中，两阶段预热+测试）
+    ├── decode_dp_bench.sh                       第5章 纯 Decode DP 均衡变体（DP≥2 部署，组内 TP 任意，核心 dp_bench.py）
+    ├── cache_dp_bench.sh                        第5章 缓存命中率 DP 均衡变体（DP≥2 部署，组内 TP 任意，核心 dp_bench.py）
+    ├── dp_bench.py                             第5章 DP 均衡客户端（两阶段：轮转预热 + 每批每组一条/barrier/批间打乱）
     ├── decode_http_sweep.py                    第2章 纯 Decode HTTP 精确测量（零依赖，流式 SSE）【仅供参考，实际不使用】
     ├── collect_results.py                      ★ 自动收集日志结果生成 CSV（所有脚本结束后自动调用）
     └── csv_to_md.py                            ★ 将 CSV 转换为 Markdown 测试报告（自动调用）
@@ -2163,9 +2290,14 @@ general-benchmark-test/
 | 脚本 | 依赖 | 说明 |
 |---|---|---|
 | `bench.sh` | `sglang` (benchmark.serving) / `vllm` (bench serve) | 统一脚本，`-F` 指定框架 |
+| `bench_random_seed.sh` | 同 `bench.sh` | `bench.sh` 随机 seed 冷测试变体：每轮自动换随机 seed，不支持 `--seed`，报告目录/标题带 random seed 标识 |
 | `prefill_bench.sh` | `sglang` / `vllm` | output_len=1 变体，`-F` 指定框架 |
+| `prefill_bench_random_seed.sh` | 同 `prefill_bench.sh` | `prefill_bench.sh` 随机 seed 冷测试变体：每轮自动换随机 seed，不支持 `--seed`，报告目录/标题带 random seed 标识 |
 | `decode_bench.sh` | `sglang` / `vllm` | SGLang 用 GSP / vLLM 用 prefix_repetition，`num_prompts = 并发数×倍数`（默认 10）增加样本量 |
 | `cache_bench.sh` | `sglang` / `vllm` | 前缀级命中：共享前缀(命中)+唯一后缀(未命中)，两阶段预热+测试，`-R` 指定命中率（默认 90%） |
+| `decode_dp_bench.sh` | `dp_bench.py`（`sglang` / `vllm` 兼容服务端） | `decode_bench.sh` DP 均衡变体：DP≥2 部署（组内 TP 任意），两阶段（轮转预热+均衡测试），报告目录/标题带 DP 均衡标识 |
+| `cache_dp_bench.sh` | `dp_bench.py`（`sglang` / `vllm` 兼容服务端） | `cache_bench.sh` DP 均衡变体：DP≥2 部署（组内 TP 任意），两阶段（DP 轮转预热+均衡测试），`-R` 指定命中率（默认 90%） |
+| `dp_bench.py` | **仅 Python 标准库** | DP 均衡客户端：OpenAI 兼容 `/v1/completions` + token id 级 prompt，两阶段（rotate/affinity 预热 + barrier/refill 均衡测试），指标输出与 `collect_results.py` 逐行兼容 |
 | `decode_http_sweep.py` | **仅 Python 标准库** | 零第三方依赖，跨框架/跨厂商可用【仅供参考，实际测试不使用】 |
 | `collect_results.py` | **仅 Python 标准库** | 扫描日志提取指标生成 CSV，所有脚本结束后自动调用 |
 | `csv_to_md.py` | **仅 Python 标准库** | 将 CSV 转换为 Markdown 测试报告（标题注明测试类型 + 三部分：结果表格 / 服务启动命令 / 测试命令），自动读取 `serve_command.sh`，找不到或为空则报错 |
@@ -2180,10 +2312,11 @@ general-benchmark-test/
 | **第2章 纯 Prefill** | `--disable-radix-cache` | `--no-enable-prefix-caching` | **关** | `random-ids` / `random` | = 并发数×倍数（默认 5） |
 | **第2章 纯 Decode** | 默认（不加 `--disable-radix-cache`） | 默认（不加 `--no-enable-prefix-caching`） | **开** | `generated-shared-prefix` / `prefix_repetition` | = 并发数×倍数（默认 10） |
 | **第3章 缓存命中率** | 默认（不加 `--disable-radix-cache`） | 默认（不加 `--no-enable-prefix-caching`） | **开** | `generated-shared-prefix` / `prefix_repetition` | N_total = 并发数×倍数（默认 5）（另预热 = 组数条请求，不计量；组数 `-g` 默认 1） |
+| **第5章 DP 均衡变体** | 默认（不加 `--disable-radix-cache`） | 默认（不加 `--no-enable-prefix-caching`） | **开** | `dp_bench.py` 自构 token-id prompt（组共享前缀 + 每请求唯一后缀） | = 并发数×倍数（按组均摊）；另轮转预热 = dp-size 轮 × 每组 1 条，不计量 |
 
 ### 快速参考：容错与超时
 
-所有四种脚本均内置三重保障，确保部分测试失败时仍能继续执行并生成报告：
+所有测试脚本（四种基础脚本及其变体）均内置三重保障，确保部分测试失败时仍能继续执行并生成报告：
 
 | 保障 | 机制 | 触发条件 | 行为 |
 |---|---|---|---|
@@ -2194,3 +2327,4 @@ general-benchmark-test/
 - `--timeout` 参数控制超时秒数，默认 `3600`（1 小时），可按需调整
 - 无论多少组失败，循环结束后都会执行 `collect_results.py` + `csv_to_md.py` 生成报告
 - 已成功的日志数据完整收集，失败组不出现在 CSV 中
+- DP 均衡变体（第 5 章）同样内置三重保障：阶段 1 预热失败/超时 → 跳过该组（`FAIL_COUNT+1`，不污染该组命中率实测），阶段 2 与原脚本一致

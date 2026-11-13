@@ -2,13 +2,14 @@
 # -*- coding: utf-8 -*-
 """collect_results.py — 扫描 bench 日志目录，提取指标汇总为 CSV
 
-支持四种测试类型的日志文件名：
+支持四种测试类型的日志文件名（变体脚本 *_random_seed / *_dp 使用相同文件名规则；
+DP 变体的预热日志带 _warmup 后缀，不匹配任何规则、不参与收集）：
   benchmark:  bench_bs-{N}_input_len-{IL}-output_len-{OL}.log        (缓存命中率=日志实测值, 无则 N/A)
   prefill:    prefill_bs-{N}_input-{IL}.log                          (缓存命中率=日志实测值, 无则 N/A)
   decode:     decode_bs-{N}_prefix-{PL}-output-{OL}.log           (缓存命中率=日志实测值, 无则 N/A)
   cache:      cache_bs-{N}_hit-{HR}_input-{IL}-output-{OL}.log     (缓存命中率=实测优先, 无则回退 HR)
 
-四种测试日志中的实测命中率来源（bench.sh / cache_bench.sh / prefill_bench.sh / decode_bench.sh 自动生成）：
+四种测试日志中的实测命中率来源（bench.sh / cache_bench.sh / prefill_bench.sh / decode_bench.sh 及其变体自动生成）：
   SGLang: --cache-report 输出 L1 (radix cache) 命中率 → "Cache Hit Details" 统计段；
           脚本追加 /metrics 的 prefill_effective_tokens_total 计数器差值
           （含 HiCache L1/L2/L3）→ "Prefix Cache Hit Details (SGLang /metrics)" 统计段

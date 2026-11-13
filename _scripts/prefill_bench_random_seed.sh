@@ -1,0 +1,774 @@
+#!/bin/bash
+set -euo pipefail
+
+# ============================================================
+# 纯 Prefill 基准测试脚本（随机 seed 冷测试变体，支持 SGLang / vLLM）
+#
+# 与 prefill_bench.sh 的唯一差异：每轮性能测试自动生成不重复的随机 seed。
+# 随机数据集内容 = f(seed, input_len, output_len)，seed 变 → 内容从首块起全变，
+# 即使服务端开启前缀缓存每轮也是冷测试（避免跨档内容重放与重跑 100% 重放）。
+# 每轮实际 seed 记录在主日志 ">>> Round seed" 行（可用于事后复现该轮数据）。
+# 其余测试逻辑与 prefill_bench.sh 完全一致。
+#
+# 原理：output_len=1 → 首 token 是 prefill 前向的副产品，0 次 decode 迭代
+# 前置条件：服务端必须关闭前缀缓存
+#   SGLang: 启动加 --disable-radix-cache
+#   vLLM:   启动加 --no-enable-prefix-caching
+# 缓存验证：测试前后查询 /metrics 计数器，实测命中率应 ≈0%
+#   （若 >0% 说明缓存未关干净，prefill 吞吐量被缓存命中"污染"）
+# ============================================================
+
+# --- 默认配置 ---
+FRAMEWORK=""
+BASE_URL=""
+MODEL_PATH=""
+SERVED_MODEL_NAME=""
+# 随机 seed 冷测试：启动时用 时间^PID 重播 $RANDOM，跨运行不撞
+RANDOM=$(( ( $(date +%s) ^ $$ ) % 32768 ))
+USED_SEEDS=" "
+gen_round_seed() {
+  local s
+  while :; do
+    s=$(( (RANDOM << 15) | RANDOM ))            # 30-bit 非负整数
+    if [[ "$USED_SEEDS" != *" $s "* ]]; then break; fi   # 本次运行内不与已用值重复
+  done
+  USED_SEEDS="$USED_SEEDS$s "
+  echo "$s"
+}
+CONCURRENCY_MULTIPLIER=5
+SLEEP_TIME=60
+REPORT_DIR=""
+CHIP_TYPE=""
+TESTER=""
+PD=""
+DESCRIBE=""
+BACKGROUND=true
+TIMEOUT=3600
+CONCURRENCY_ARG=""
+IO_ARG=""
+
+DEFAULT_CONCURRENCY="1,8,32,64,128"
+DEFAULT_IO="65536 1,131072 1,262144 1"
+
+# --- 参数解析 ---
+usage() {
+  cat <<EOF
+Usage: $0 -F <sglang|vllm> [OPTIONS]
+
+纯 Prefill 测试：output_len=1，input_len 递增。
+前置条件：服务端必须关闭前缀缓存
+  SGLang: 启动加 --disable-radix-cache
+  vLLM:   启动加 --no-enable-prefix-caching
+
+必选参数:
+  -F, --framework FRAMEWORK    推理框架类型: sglang 或 vllm
+  -u, --base-url URL            推理服务地址
+  -m, --model-path PATH         模型路径
+  -n, --served-model-name NAME  服务模型名
+  -t, --chip-type TYPE          芯片类型(用于CSV列名后缀,如H100/B200)
+  -T, --tester NAME             测试人员(用于报告目录层级和报告命名)
+  -P, --pd MODE                 PD部署模式: agg(非PD分离) 或 disagg(PD分离)
+
+可选参数:
+  -r, --report-dir DIR          报告输出目录        (default: ./{framework}_prefill_random_seed_reports)
+  -c, --concurrency LIST        并发档位。两种形式:
+                                 全局: 逗号分隔单档, 如 "1,8,32,64,128" (default: $DEFAULT_CONCURRENCY)
+                                 逐组: 组间逗号、组内空格, 与 -i IO组合从第一组起一一对应, 如 "1 8 32 64,1 8 32,1 8"
+                                   组数=1 全局 / 组数>组合数 舍弃多余组 / 组合数>组数 未匹配组合用默认
+                                   未传 -i 时只取第一组作全局; 各IO组合仍按输入长度限上限(≤64K全档/128K~256K≤64)
+  -i, --io-combinations LIST    IO组合(逗号分隔,每组"in out") (default: $DEFAULT_IO)
+  --seed                        不支持：本变体每轮自动生成随机 seed（实际值见日志）
+  --concurrency-multiplier N    并发倍数: 请求数(num-prompts) = 并发数 × N  (default: $CONCURRENCY_MULTIPLIER)
+  -s, --sleep SECONDS           每次测试间隔秒数    (default: $SLEEP_TIME)
+  -d, --describe TEXT           模型描述信息(可选,填入报告末尾)
+  -f, --foreground              前台执行(默认后台)
+  --timeout SECONDS             每组测试超时秒数        (default: $TIMEOUT)
+  -h, --help                    显示帮助
+
+示例（默认后台执行）:
+  $0 -F sglang -u http://127.0.0.1:8080 -m /data/model -n model-name -t H100 -T zhangsan -P agg
+  $0 -F vllm   -u http://127.0.0.1:8000 -m /data/model -n model-name -t H100 -T zhangsan -P disagg
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -F|--framework)           FRAMEWORK="$2";            shift 2 ;;
+    -u|--base-url)            BASE_URL="$2";             shift 2 ;;
+    -m|--model-path)          MODEL_PATH="$2";           shift 2 ;;
+    -n|--served-model-name)   SERVED_MODEL_NAME="$2";    shift 2 ;;
+    -r|--report-dir)          REPORT_DIR="$2";           shift 2 ;;
+    -c|--concurrency)         CONCURRENCY_ARG="$2";      shift 2 ;;
+    -i|--io-combinations)     IO_ARG="$2";              shift 2 ;;
+    --seed)
+      echo "ERROR: 随机 seed 变体每轮自动生成 seed，不支持 --seed 参数" >&2
+      exit 1 ;;
+    --concurrency-multiplier) CONCURRENCY_MULTIPLIER="$2"; shift 2 ;;
+    -s|--sleep)               SLEEP_TIME="$2";           shift 2 ;;
+    -d|--describe)            DESCRIBE="$2";             shift 2 ;;
+    -f|--foreground)          BACKGROUND=false;          shift   ;;
+    --timeout)                TIMEOUT="$2";              shift 2 ;;
+    -t|--chip-type)           CHIP_TYPE="$2";            shift 2 ;;
+    -T|--tester)              TESTER="$2";               shift 2 ;;
+    -P|--pd)                  PD="$2";                   shift 2 ;;
+    -h|--help)                usage; exit 0             ;;
+    *) echo "Unknown option: $1" >&2; usage; exit 1    ;;
+  esac
+done
+
+# --- 校验框架参数 ---
+if [[ -z "$FRAMEWORK" ]]; then
+  echo "ERROR: 必须指定推理框架，使用 -F sglang 或 -F vllm" >&2
+  echo ""
+  usage
+  exit 1
+fi
+
+case "$FRAMEWORK" in
+  sglang|sg)
+    FRAMEWORK="sglang"
+    DATASET_NAME="random-ids"
+    [[ -z "$REPORT_DIR" ]] && REPORT_DIR="./sglang_prefill_random_seed_reports"
+    BENCH_LABEL="SGLang"
+    LOG_PREFIX="sglang_prefill_random_seed"
+    ;;
+  vllm|vl)
+    FRAMEWORK="vllm"
+    DATASET_NAME="random"
+    [[ -z "$REPORT_DIR" ]] && REPORT_DIR="./vllm_prefill_random_seed_reports"
+    BENCH_LABEL="vLLM"
+    LOG_PREFIX="vllm_prefill_random_seed"
+    ;;
+  *)
+    echo "ERROR: 不支持的框架 '$FRAMEWORK'，请使用 sglang 或 vllm" >&2
+    exit 1
+    ;;
+esac
+
+# --- 校验必选参数 ---
+MISSING=""
+[[ -z "$BASE_URL" ]]          && MISSING+="  --base-url / -u\n"
+[[ -z "$MODEL_PATH" ]]        && MISSING+="  --model-path / -m\n"
+[[ -z "$SERVED_MODEL_NAME" ]] && MISSING+="  --served-model-name / -n\n"
+[[ -z "$CHIP_TYPE" ]]         && MISSING+="  --chip-type / -t\n"
+[[ -z "$TESTER" ]]            && MISSING+="  --tester / -T\n"
+[[ -z "$PD" ]]                 && MISSING+="  --pd / -P\n"
+if [[ -n "$MISSING" ]]; then
+  echo "ERROR: 以下必选参数未指定:" >&2
+  printf "%b" "$MISSING" >&2
+  echo "" >&2
+  usage
+  exit 1
+fi
+
+# --- 校验 PD 参数 ---
+case "$PD" in
+  agg|disagg) ;;
+  *)
+    echo "ERROR: --pd 只支持 agg(非PD分离) 或 disagg(PD分离)，当前值: '$PD'" >&2
+    exit 1
+    ;;
+esac
+
+# --- 校验并发倍数 ---
+if ! [[ "$CONCURRENCY_MULTIPLIER" =~ ^[1-9][0-9]*$ ]]; then
+  echo "ERROR: --concurrency-multiplier 必须为 >=1 的整数，当前值: '$CONCURRENCY_MULTIPLIER'" >&2
+  exit 1
+fi
+
+# --- 校验并发档位（-c 支持全局逗号列表或逐组指定：组间逗号、组内空格） ---
+__conc_raw="${CONCURRENCY_ARG:-$DEFAULT_CONCURRENCY}"
+if [[ "$__conc_raw" == *[[:space:]]* ]]; then
+  IFS=',' read -ra __conc_groups <<< "$__conc_raw"
+  for __grp in "${__conc_groups[@]}"; do
+    if [[ -z "$__grp" ]]; then
+      echo "ERROR: --concurrency 存在空的并发组（检查连续逗号），当前值: '$__conc_raw'" >&2
+      exit 1
+    fi
+    for __lvl in $__grp; do
+      if ! [[ "$__lvl" =~ ^[1-9][0-9]*$ ]]; then
+        echo "ERROR: --concurrency 并发档位 '$__lvl' 必须为 >=1 的整数，当前值: '$__conc_raw'" >&2
+        exit 1
+      fi
+    done
+  done
+else
+  IFS=',' read -ra __conc_levels <<< "$__conc_raw"
+  for __lvl in "${__conc_levels[@]}"; do
+    if [[ -z "$__lvl" ]] || ! [[ "$__lvl" =~ ^[1-9][0-9]*$ ]]; then
+      echo "ERROR: --concurrency 并发档位必须为 >=1 的整数（逗号分隔），当前值: '$__conc_raw'" >&2
+      exit 1
+    fi
+  done
+fi
+
+# --- 前置校验：serve_command.sh ---
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+SERVE_CMD_FILE="${PROJECT_ROOT}/serve_command.sh"
+if [[ ! -f "$SERVE_CMD_FILE" ]]; then
+  echo "ERROR: 找不到 serve_command.sh，请先复制模板并填写模型服务启动命令：" >&2
+  echo "  cp serve_command.sh.template serve_command.sh" >&2
+  echo "  # 然后编辑 serve_command.sh 填写真实部署命令" >&2
+  exit 1
+fi
+if [[ ! -s "$SERVE_CMD_FILE" ]]; then
+  echo "ERROR: serve_command.sh 文件为空，请填写真实的模型服务启动命令。" >&2
+  exit 1
+fi
+
+# --- 检测可用的 Python 命令 ---
+if command -v python3 &>/dev/null; then
+  PYTHON_CMD="python3"
+elif command -v python &>/dev/null; then
+  PYTHON_CMD="python"
+else
+  echo "ERROR: 找不到 python 或 python3 命令" >&2
+  exit 1
+fi
+
+# --- 后台执行（默认） ---
+if [[ "$BACKGROUND" == "true" ]]; then
+  mkdir -p "$REPORT_DIR/${TESTER}"
+  LOG_FILE="${REPORT_DIR}/${TESTER}/${LOG_PREFIX}_$(date +%Y%m%d_%H%M%S).log"
+  nohup "$0" \
+    --framework "$FRAMEWORK" \
+    --base-url "$BASE_URL" \
+    --model-path "$MODEL_PATH" \
+    --served-model-name "$SERVED_MODEL_NAME" \
+    --report-dir "$REPORT_DIR" \
+    --concurrency "${CONCURRENCY_ARG:-$DEFAULT_CONCURRENCY}" \
+    --io-combinations "${IO_ARG:-$DEFAULT_IO}" \
+    --sleep "$SLEEP_TIME" \
+    --concurrency-multiplier "$CONCURRENCY_MULTIPLIER" \
+    --chip-type "$CHIP_TYPE" \
+    --tester "$TESTER" \
+    --pd "$PD" \
+    --timeout "$TIMEOUT" \
+    --foreground \
+    > "$LOG_FILE" 2>&1 &
+  PID=$!
+  echo "${BENCH_LABEL} prefill benchmark 已在后台启动 (PID: $PID)"
+  echo "日志文件: $LOG_FILE"
+  echo "监控进度: tail -f \"$LOG_FILE\""
+  echo "停止进程: kill $PID"
+  exit 0
+fi
+
+# --- 构建并发档位与 IO 组合映射 ---
+# -c 无空格: 全局档位列表（逗号分隔单档，向后兼容）
+# -c 含空格: 并发组（组间逗号、组内空格），与 IO 组合从第一组起一一对应：
+#   组数=1 → 全局适用；组数<组合数 → 未匹配组合用默认档位；组数>组合数 → 舍弃多余组
+#   未显式传 -i 时 → 只取第一组作为全局
+CONCURRENCY_STR="${CONCURRENCY_ARG:-$DEFAULT_CONCURRENCY}"
+IO_STR="${IO_ARG:-$DEFAULT_IO}"
+IFS=',' read -ra io_combinations <<< "$IO_STR"
+
+n_combos=${#io_combinations[@]}
+CONC_GLOBAL_MODE=true
+CONC_MAP_DESC="全局 ${CONCURRENCY_STR}"
+declare -a CONC_STRS=()
+if [[ "$CONCURRENCY_STR" == *[[:space:]]* ]]; then
+  IFS=',' read -ra __conc_groups <<< "$CONCURRENCY_STR"
+  n_groups=${#__conc_groups[@]}
+  if [[ -z "$IO_ARG" ]] || [[ "$n_groups" -eq 1 ]]; then
+    for ((ci=0; ci<n_combos; ci++)); do
+      CONC_STRS[$ci]="${__conc_groups[0]}"
+    done
+    if [[ -z "$IO_ARG" ]]; then
+      CONC_MAP_DESC="全局 ${__conc_groups[0]}（未传 -i，取第一组）"
+    else
+      CONC_MAP_DESC="全局 ${__conc_groups[0]}（单组）"
+    fi
+  else
+    CONC_GLOBAL_MODE=false
+    CONC_MAP_DESC="按 IO 组合一一对应（组数>组合数舍弃多余，未匹配组合用默认 ${DEFAULT_CONCURRENCY}）"
+    for ((ci=0; ci<n_combos; ci++)); do
+      if [[ "$ci" -lt "$n_groups" ]]; then
+        CONC_STRS[$ci]="${__conc_groups[$ci]}"
+      else
+        CONC_STRS[$ci]="$(echo "$DEFAULT_CONCURRENCY" | tr ',' ' ')"
+      fi
+    done
+  fi
+else
+  __conc_flat="$(echo "$CONCURRENCY_STR" | tr ',' ' ')"
+  for ((ci=0; ci<n_combos; ci++)); do
+    CONC_STRS[$ci]="$__conc_flat"
+  done
+fi
+
+# --- 各 IO 组合的并发数上限（按输入长度限制并发档位，超出自动跳过）---
+io_concurrency_cap() {
+  local in_len=$1
+  if [[ "$in_len" -le 65536 ]]; then
+    echo 128      # 64K：全档位
+  else
+    echo 64       # 128K/256K：移除 128
+  fi
+}
+
+safe_model_name=$(echo "$SERVED_MODEL_NAME" | sed 's/.*[\/\\]//; s/[:\\]//g')
+
+# --- 运行时间戳（作为本次测试的子目录名，避免覆盖） ---
+RUN_TS=$(date +%Y%m%d_%H%M%S)
+
+# --- 创建报告目录 ---
+RUN_DIR="$REPORT_DIR/${TESTER}/${safe_model_name}/${RUN_TS}"
+mkdir -p "$RUN_DIR"
+
+echo "=========================================="
+echo "=== Starting ${BENCH_LABEL} Pure Prefill Benchmark (random seed) ==="
+echo "=== Framework:    $FRAMEWORK"
+echo "=== Base URL:     $BASE_URL"
+echo "=== Model Path:   $MODEL_PATH"
+echo "=== Served Name:  $SERVED_MODEL_NAME"
+echo "=== Report Dir:   $RUN_DIR"
+if [[ "$CONC_GLOBAL_MODE" == "true" ]]; then
+  echo "=== Concurrency:  ${CONC_MAP_DESC} (global)"
+else
+  echo "=== Concurrency:  per-IO groups:"
+  for ((ci=0; ci<n_combos; ci++)); do
+    echo "===   ${io_combinations[$ci]} -> ${CONC_STRS[$ci]}"
+  done
+fi
+echo "=== output_len=1 (pure prefill, 0 decode) ==="
+echo '=== Seed:          每轮随机（实际值见日志 ">>> Round seed" 行）'
+echo "=== Conc Multiplier: $CONCURRENCY_MULTIPLIER"
+echo "=== Tester:       $TESTER"
+echo "=== PD Mode:      $PD"
+echo "=========================================="
+
+# --- 检测日志中的错误模式（即使 bench 退出码为 0 也可能全部请求失败） ---
+check_log_errors() {
+  local logfile="$1"
+  local patterns=(
+    "All requests failed"
+    "Traceback (most recent call last)"
+    "ConnectionError"
+    "Connection refused"
+    "IndexError"
+    "requests.exceptions"
+    "httpx.ConnectError"
+  )
+  for pat in "${patterns[@]}"; do
+    if grep -q "$pat" "$logfile" 2>/dev/null; then
+      echo "$pat"
+      return 0
+    fi
+  done
+  return 1
+}
+
+FAIL_COUNT=0
+
+# ============================================================
+# 前缀缓存命中率实测（/metrics 计数器差值法）
+#   验证服务端缓存是否已按要求关闭（预期 0%）
+#   vLLM:   vllm:prefix_cache_queries / vllm:prefix_cache_hits / vllm:external_prefix_cache_hits
+#           含 L1(GPU) / L3(external/LM cache) 两层命中统计
+#   SGLang: sglang:prefill_effective_tokens_total (mode=input/device_hit/host_hit/storage_hit)
+#           含 HiCache L1(GPU) / L2(CPU) / L3(DFKV) 全层命中统计
+# ============================================================
+
+get_vllm_prefix_cache_counters() {
+  curl -s --max-time 10 "$BASE_URL/metrics" 2>/dev/null | awk '
+    function val(line,   s, a) {
+      s = line
+      sub(/\{.*\}/, "", s)
+      sub(/^[^ \t]*[ \t]*/, "", s)
+      if (s == "") return 0
+      split(s, a, /[ \t]+/)
+      return a[1] + 0
+    }
+    /^vllm:(gpu_)?prefix_cache_queries(_total)?[ \t{]/ { q += val($0); found = 1 }
+    /^vllm:(gpu_)?prefix_cache_hits(_total)?[ \t{]/    { h += val($0); found = 1 }
+    /^vllm:external_prefix_cache_hits(_total)?[ \t{]/  { l3h += val($0) }
+    END {
+      if (found) printf "%d %d %d", q, h, l3h
+      else print "N/A"
+    }
+  ' || true
+}
+
+wait_vllm_prefix_cache_counters() {
+  local prev cur i
+  prev="$(get_vllm_prefix_cache_counters)"
+  for i in 1 2 3 4 5 6; do
+    sleep 5
+    cur="$(get_vllm_prefix_cache_counters)"
+    [[ "$cur" == "$prev" ]] && break
+    prev="$cur"
+  done
+  echo "$prev"
+}
+
+append_vllm_cache_report() {
+  local log_file="$1" before="$2"
+  local after q_b l1h_b l3h_b q_a l1h_a l3h_a
+  local q_d l1h_d l3h_d total_hit rate l1_rate l3_rate
+  after="$(wait_vllm_prefix_cache_counters)"
+  if [[ "$before" == "N/A" || "$after" == "N/A" ]]; then
+    echo ">>> [WARN] 无法从 ${BASE_URL}/metrics 获取前缀缓存计数器，本组命中率记为 N/A"
+    {
+      echo ""
+      echo "--------------- Prefix Cache Hit Details (vLLM /metrics) ---------------"
+      echo "Cache hit rate:                       N/A (prefix cache counters unavailable from server /metrics)"
+    } >> "$log_file"
+    return
+  fi
+  read -r q_b l1h_b l3h_b <<< "$before" || true
+  read -r q_a l1h_a l3h_a <<< "$after" || true
+  q_d=$(( q_a - q_b ))
+  l1h_d=$(( l1h_a - l1h_b ))
+  l3h_d=$(( l3h_a - l3h_b ))
+  total_hit=$(( l1h_d + l3h_d ))
+  if [[ "$q_d" -le 0 ]]; then
+    {
+      echo ""
+      echo "--------------- Prefix Cache Hit Details (vLLM /metrics) ---------------"
+      echo "Prefix cache queries (tokens):        0"
+      echo "Total cache hit tokens:               0"
+      echo "Total prefill tokens:                 0"
+      echo "Cache hit rate:                       0.0% (server reported no prefix cache activity)"
+      echo "L1 cache hit rate (device):           0.0%"
+      echo "L3 cache hit rate (external):         0.0%"
+    } >> "$log_file"
+    return
+  fi
+  rate=$(awk -v h="$total_hit" -v q="$q_d" 'BEGIN { printf "%.1f", h * 100 / q }')
+  l1_rate=$(awk -v h="$l1h_d" -v q="$q_d" 'BEGIN { printf "%.1f", h * 100 / q }')
+  l3_rate=$(awk -v h="$l3h_d" -v q="$q_d" 'BEGIN { printf "%.1f", h * 100 / q }')
+  {
+    echo ""
+    echo "--------------- Prefix Cache Hit Details (vLLM /metrics) ---------------"
+    echo "Prefix cache queries (tokens):        ${q_d}"
+    echo "Prefix cache hits (L1 GPU):           ${l1h_d}"
+    echo "External prefix cache hits (L3 disk): ${l3h_d}"
+    echo "Total cache hit tokens:               ${total_hit}"
+    echo "Total prefill tokens:                 ${q_d}"
+    echo "Cache hit rate:                       ${rate}%"
+    echo "L1 cache hit rate (device):           ${l1_rate}%"
+    echo "L3 cache hit rate (external):         ${l3_rate}%"
+  } >> "$log_file"
+  echo ">>> vLLM /metrics cache hit rate: ${rate}% (L1=${l1_rate}% L3=${l3_rate}%, hits ${total_hit} / queries ${q_d} tokens)"
+}
+
+get_sglang_cache_counters() {
+  curl -s --max-time 10 "$BASE_URL/metrics" 2>/dev/null | awk '
+    function val(line,   s, a) {
+      s = line
+      sub(/\{.*\}/, "", s)
+      sub(/^[^ \t]*[ \t]*/, "", s)
+      if (s == "") return 0
+      split(s, a, /[ \t]+/)
+      return a[1] + 0
+    }
+    /^sglang:prefill_effective_tokens_total\{/ && /mode="input"/        { inp += val($0); found = 1 }
+    /^sglang:prefill_effective_tokens_total\{/ && /mode="device_hit"/   { dev += val($0); found = 1 }
+    /^sglang:prefill_effective_tokens_total\{/ && /mode="host_hit"/     { host += val($0); found = 1 }
+    /^sglang:prefill_effective_tokens_total\{/ && /mode="storage_hit"/  { stor += val($0); found = 1 }
+    END {
+      if (found) printf "%d %d %d %d", inp, dev, host, stor
+      else print "N/A"
+    }
+  ' || true
+}
+
+wait_sglang_cache_counters() {
+  local prev cur i
+  prev="$(get_sglang_cache_counters)"
+  for i in 1 2 3 4 5 6; do
+    sleep 5
+    cur="$(get_sglang_cache_counters)"
+    [[ "$cur" == "$prev" ]] && break
+    prev="$cur"
+  done
+  echo "$prev"
+}
+
+append_sglang_cache_report() {
+  local log_file="$1" before="$2"
+  local after inp_b dev_b host_b stor_b inp_a dev_a host_a stor_a
+  local inp_d dev_d host_d stor_d total_hit total_all rate l1_rate l2_rate l3_rate
+  after="$(wait_sglang_cache_counters)"
+  if [[ "$before" == "N/A" || "$after" == "N/A" ]]; then
+    echo ">>> [WARN] 无法从 ${BASE_URL}/metrics 获取 SGLang 缓存计数器，本组命中率记为 N/A"
+    {
+      echo ""
+      echo "--------------- Prefix Cache Hit Details (SGLang /metrics) ---------------"
+      echo "Cache hit rate:                       N/A (sglang prefill_effective_tokens_total unavailable from server /metrics)"
+    } >> "$log_file"
+    return
+  fi
+  read -r inp_b dev_b host_b stor_b <<< "$before" || true
+  read -r inp_a dev_a host_a stor_a <<< "$after" || true
+  inp_d=$(( inp_a - inp_b ))
+  dev_d=$(( dev_a - dev_b ))
+  host_d=$(( host_a - host_b ))
+  stor_d=$(( stor_a - stor_b ))
+  total_hit=$(( dev_d + host_d + stor_d ))
+  total_all=$(( inp_d + total_hit ))
+  if [[ "$total_all" -le 0 ]]; then
+    {
+      echo ""
+      echo "--------------- Prefix Cache Hit Details (SGLang /metrics) ---------------"
+      echo "Prefill effective tokens (input):     0"
+      echo "Total cache hit tokens:               0"
+      echo "Total prefill tokens:                 0"
+      echo "Cache hit rate:                       0.0% (server reported no prefill activity)"
+      echo "L1 cache hit rate (device):           0.0%"
+      echo "L2 cache hit rate (host):             0.0%"
+      echo "L3 cache hit rate (storage):          0.0%"
+    } >> "$log_file"
+    return
+  fi
+  rate=$(awk -v h="$total_hit" -v a="$total_all" 'BEGIN { printf "%.1f", h * 100 / a }')
+  l1_rate=$(awk -v h="$dev_d" -v a="$total_all" 'BEGIN { printf "%.1f", h * 100 / a }')
+  l2_rate=$(awk -v h="$host_d" -v a="$total_all" 'BEGIN { printf "%.1f", h * 100 / a }')
+  l3_rate=$(awk -v h="$stor_d" -v a="$total_all" 'BEGIN { printf "%.1f", h * 100 / a }')
+  {
+    echo ""
+    echo "--------------- Prefix Cache Hit Details (SGLang /metrics) ---------------"
+    echo "Prefill effective tokens (input):     ${inp_d}"
+    echo "Cache hit tokens (L1 device):         ${dev_d}"
+    echo "Cache hit tokens (L2 host):           ${host_d}"
+    echo "Cache hit tokens (L3 storage):        ${stor_d}"
+    echo "Total cache hit tokens:               ${total_hit}"
+    echo "Total prefill tokens:                 ${total_all}"
+    echo "Cache hit rate:                       ${rate}%"
+    echo "L1 cache hit rate (device):           ${l1_rate}%"
+    echo "L2 cache hit rate (host):             ${l2_rate}%"
+    echo "L3 cache hit rate (storage):          ${l3_rate}%"
+  } >> "$log_file"
+  echo ">>> SGLang /metrics cache hit rate: ${rate}% (L1=${l1_rate}% L2=${l2_rate}% L3=${l3_rate}%, hits ${total_hit} / total ${total_all} tokens)"
+}
+
+# 外层循环：遍历 IO 组合；内层循环：遍历该组合对应的并发档位（--concurrency 支持逐组指定）
+for combo_idx in "${!io_combinations[@]}"; do
+  combo="${io_combinations[$combo_idx]}"
+  input_len=$(echo "$combo" | awk '{print $1}')
+  output_len=$(echo "$combo" | awk '{print $2}')
+
+  # 该 IO 组合对应的并发档位（-c 逐组映射，见构建区解析）
+  IFS=' ' read -ra combo_concurrency_list <<< "${CONC_STRS[$combo_idx]}"
+
+  # 并发档位上限：该组合超出上限档位时跳过（见 io_concurrency_cap）
+  conc_cap=$(io_concurrency_cap "$input_len")
+
+  for concurrency in "${combo_concurrency_list[@]}"; do
+    if [[ "$concurrency" -gt "$conc_cap" ]]; then
+      echo ">>> Skip: Input=$input_len, Concurrency=$concurrency > cap $conc_cap"
+      continue
+    fi
+
+    # num_prompts = 并发数 × 并发倍数（默认 5，增加统计样本数，提高测量稳定性）
+    num_prompts=$((concurrency * CONCURRENCY_MULTIPLIER))
+    echo ""
+    echo "--- Input=$input_len, Concurrency=$concurrency, Num Prompts=$num_prompts ---"
+
+    # 每轮生成不重复随机 seed：随机数据集内容随 seed 改变，
+    # 确保即使服务端开启前缀缓存每轮也是冷测试（不与前轮内容重放）
+    ROUND_SEED="$(gen_round_seed)"
+    echo ">>> Round seed: $ROUND_SEED"
+    log_file="${RUN_DIR}/prefill_bs-${concurrency}_input-${input_len}.log"
+    jsonl_file="${RUN_DIR}/prefill_bs-${concurrency}_input-${input_len}.jsonl"
+    echo ""
+    echo ">>> Prefill: Input=$input_len, Output=$output_len, Concurrency=$concurrency"
+    echo ">>> Log file: $log_file"
+
+    # --- 测试前抓取服务端前缀缓存计数器（验证缓存已关闭，预期 0%） ---
+    if [[ "$FRAMEWORK" == "vllm" ]]; then
+      cache_pc_before="$(wait_vllm_prefix_cache_counters)"
+    elif [[ "$FRAMEWORK" == "sglang" ]]; then
+      cache_pc_before="$(wait_sglang_cache_counters)"
+    fi
+
+    set +e
+    if [[ "$FRAMEWORK" == "sglang" ]]; then
+    timeout "$TIMEOUT" "$PYTHON_CMD" -m sglang.benchmark.serving \
+        --backend sglang-oai-chat \
+        --base-url "$BASE_URL" \
+        --model "$MODEL_PATH" \
+        --served-model-name "$SERVED_MODEL_NAME" \
+        --dataset-name "$DATASET_NAME" \
+        --random-input-len "$input_len" \
+        --random-output-len "$output_len" \
+        --random-range-ratio 1.0 \
+        --num-prompts "$num_prompts" \
+        --max-concurrency "$concurrency" \
+        --seed "$ROUND_SEED" \
+        --output-file "$jsonl_file" \
+        > "$log_file" 2>&1
+    elif [[ "$FRAMEWORK" == "vllm" ]]; then
+      timeout "$TIMEOUT" vllm bench serve \
+        --backend openai-chat \
+        --endpoint /v1/chat/completions \
+        --base-url "$BASE_URL" \
+        --model "$MODEL_PATH" \
+        --served-model-name "$SERVED_MODEL_NAME" \
+        --dataset-name "$DATASET_NAME" \
+        --random-input-len "$input_len" \
+        --random-output-len "$output_len" \
+        --num-prompts "$num_prompts" \
+        --max-concurrency "$concurrency" \
+        --trust-remote-code \
+        --temperature 0.7 \
+        --random-range-ratio 0.0 \
+        --random-prefix-len 0 \
+        --seed "$ROUND_SEED" \
+        --metric_percentiles 90,95,99 \
+        --ready-check-timeout-sec 30 \
+        > "$log_file" 2>&1
+    fi
+    bench_rc=$?
+    set -e
+
+    if [ $bench_rc -eq 124 ]; then
+      echo "!!! TIMEOUT: test killed after ${TIMEOUT}s. Check log file: $log_file"
+      FAIL_COUNT=$((FAIL_COUNT + 1))
+    elif [ $bench_rc -ne 0 ]; then
+      echo "!!! Error occurred (exit code: $bench_rc). Check log file: $log_file"
+      FAIL_COUNT=$((FAIL_COUNT + 1))
+    else
+      error_pattern="$(check_log_errors "$log_file")" || true
+      if [[ -n "$error_pattern" ]]; then
+        echo "!!! Log error detected: '$error_pattern'. Check log file: $log_file"
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+      else
+        echo ">>> Success. Results saved to: $log_file"
+        # --- 实测前缀缓存命中率，验证缓存已关闭（预期 0%） ---
+        if [[ "$FRAMEWORK" == "vllm" ]]; then
+          append_vllm_cache_report "$log_file" "$cache_pc_before"
+        elif [[ "$FRAMEWORK" == "sglang" ]]; then
+          append_sglang_cache_report "$log_file" "$cache_pc_before"
+        fi
+      fi
+    fi
+    echo "--- Finished Input=$input_len. Sleeping for $SLEEP_TIME seconds... ---"
+    sleep "$SLEEP_TIME"
+  done
+  echo "--- Completed all concurrency levels for IO=$combo ---"
+done
+
+echo ""
+echo "=== All prefill tests finished ==="
+echo "=== Check results in: $RUN_DIR ==="
+if [[ $FAIL_COUNT -gt 0 ]]; then
+  echo "=== WARNING: $FAIL_COUNT test(s) failed. Partial results will still be collected. ==="
+fi
+
+# --- 构建 BENCH_COMMANDS（循环模板，变量占位，用于报告第三部分） ---
+IO_QUOTED=""
+for io in "${io_combinations[@]}"; do
+  IO_QUOTED="${IO_QUOTED}\"$io\" "
+done
+IO_QUOTED="${IO_QUOTED% }"
+
+# 记录模板中的并发档位解析块（全局模式直接赋值；逐组模式用 case 匹配 IO 组合）
+CONC_CASE_BLOCK=""
+if [[ "$CONC_GLOBAL_MODE" == "true" ]]; then
+  CONC_CASE_BLOCK="  CONC_LIST=\"$(echo "${CONC_STRS[0]}" | tr ',' ' ')\""
+else
+  CONC_CASE_BLOCK="  case \"\$IO\" in"
+  for ((ci=0; ci<n_combos; ci++)); do
+    CONC_CASE_BLOCK="${CONC_CASE_BLOCK}
+    \"${io_combinations[$ci]}\") CONC_LIST=\"${CONC_STRS[$ci]}\" ;;"
+  done
+  CONC_CASE_BLOCK="${CONC_CASE_BLOCK}
+    *) CONC_LIST=\"$(echo "$DEFAULT_CONCURRENCY" | tr ',' ' ')\" ;;
+  esac"
+fi
+
+if [[ "$FRAMEWORK" == "sglang" ]]; then
+  BENCH_COMMANDS="# 并发数映射: ${CONC_MAP_DESC}
+# 注: 每轮测试自动生成随机 seed（冷测试，内容不重复），实际值见运行日志 Round seed 行
+# 并发倍数: ${CONCURRENCY_MULTIPLIER}（num-prompts = 并发数 × 并发倍数）
+# IO 组合: ${IO_STR}
+# 并发档位按输入长度限上限: ≤64K 全档 / 128K~256K ≤64（超出自动跳过）
+for IO in ${IO_QUOTED}; do
+  INPUT_LEN=\$(echo \"\$IO\" | awk '{print \$1}')
+  OUTPUT_LEN=\$(echo \"\$IO\" | awk '{print \$2}')
+${CONC_CASE_BLOCK}
+  CONC_CAP=\$(io_concurrency_cap \"\$INPUT_LEN\")
+  for CONCURRENCY in \$CONC_LIST; do
+    [[ \"\$CONCURRENCY\" -gt \"\$CONC_CAP\" ]] && continue
+    NUM_PROMPTS=\$((CONCURRENCY * ${CONCURRENCY_MULTIPLIER}))
+    $PYTHON_CMD -m sglang.benchmark.serving \\
+      --backend sglang-oai-chat \\
+      --base-url \"\$BASE_URL\" \\
+      --model \"\$MODEL_PATH\" \\
+      --served-model-name \"\$SERVED_MODEL_NAME\" \\
+      --dataset-name ${DATASET_NAME} \\
+      --random-input-len \$INPUT_LEN \\
+      --random-output-len \$OUTPUT_LEN \\
+      --random-range-ratio 1.0 \\
+      --num-prompts \$NUM_PROMPTS \\
+      --max-concurrency \$CONCURRENCY \\
+      --seed \$ROUND_SEED
+  done
+  done
+done"
+elif [[ "$FRAMEWORK" == "vllm" ]]; then
+  BENCH_COMMANDS="# 并发数映射: ${CONC_MAP_DESC}
+# 注: 每轮测试自动生成随机 seed（冷测试，内容不重复），实际值见运行日志 Round seed 行
+# 并发倍数: ${CONCURRENCY_MULTIPLIER}（num-prompts = 并发数 × 并发倍数）
+# IO 组合: ${IO_STR}
+# 并发档位按输入长度限上限: ≤64K 全档 / 128K~256K ≤64（超出自动跳过）
+for IO in ${IO_QUOTED}; do
+  INPUT_LEN=\$(echo \"\$IO\" | awk '{print \$1}')
+  OUTPUT_LEN=\$(echo \"\$IO\" | awk '{print \$2}')
+${CONC_CASE_BLOCK}
+  CONC_CAP=\$(io_concurrency_cap \"\$INPUT_LEN\")
+  for CONCURRENCY in \$CONC_LIST; do
+    [[ \"\$CONCURRENCY\" -gt \"\$CONC_CAP\" ]] && continue
+    NUM_PROMPTS=\$((CONCURRENCY * ${CONCURRENCY_MULTIPLIER}))
+    vllm bench serve \\
+      --backend openai-chat \\
+      --endpoint /v1/chat/completions \\
+      --base-url \"\$BASE_URL\" \\
+      --model \"\$MODEL_PATH\" \\
+      --served-model-name \"\$SERVED_MODEL_NAME\" \\
+      --dataset-name ${DATASET_NAME} \\
+      --random-input-len \$INPUT_LEN \\
+      --random-output-len \$OUTPUT_LEN \\
+      --num-prompts \$NUM_PROMPTS \\
+      --max-concurrency \$CONCURRENCY \\
+      --trust-remote-code \\
+      --temperature 0.7 \\
+      --random-range-ratio 0.0 \\
+      --random-prefix-len 0 \\
+      --seed \$ROUND_SEED \\
+      --metric_percentiles 90,95,99 \\
+      --ready-check-timeout-sec 30
+  done
+  done
+done"
+fi
+
+# --- 自动收集结果生成 CSV ---
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CSV_FILE="${RUN_DIR}/prefill_results.csv"
+"$PYTHON_CMD" "${SCRIPT_DIR}/collect_results.py" \
+  --report-dir "$RUN_DIR" \
+  --model-name "$SERVED_MODEL_NAME" \
+  --framework "$FRAMEWORK" \
+  --chip-type "$CHIP_TYPE" \
+  --out "$CSV_FILE"
+
+# --- 自动生成 Markdown 测试报告 ---
+MD_FILE="${RUN_DIR}/${TESTER}_${safe_model_name}_${CHIP_TYPE}_${FRAMEWORK}_${PD}_prefill_random_seed_${RUN_TS}.md"
+if [[ -n "$DESCRIBE" ]]; then
+  "$PYTHON_CMD" "${SCRIPT_DIR}/csv_to_md.py" \
+    --csv "$CSV_FILE" \
+    --output "$MD_FILE" \
+    --test-type "纯 Prefill 测试（随机 seed）" \
+    --bench-command "$BENCH_COMMANDS" \
+    --describe "$DESCRIBE"
+else
+  "$PYTHON_CMD" "${SCRIPT_DIR}/csv_to_md.py" \
+    --csv "$CSV_FILE" \
+    --output "$MD_FILE" \
+    --test-type "纯 Prefill 测试（随机 seed）" \
+    --bench-command "$BENCH_COMMANDS"
+fi
